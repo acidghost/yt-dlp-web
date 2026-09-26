@@ -1,0 +1,10 @@
+# Keep downloads, credentials and local binaries out of the build context.
+**
+!app/
+!app/**
+!scripts/
+!scripts/build.ts
+!package.json
+!bun.lock
+!bunfig.toml
+!tsconfig.json
