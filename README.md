@@ -89,6 +89,10 @@ just smoke-image   # rebuild, then check yt-dlp, yt-dlp-ejs, Deno, ffmpeg
 just run-image https://player.example.com  # creates/reuses yt-dlp-web-data volume
 ```
 
+Pushing a Git tag publishes a signed `linux/amd64` image to
+`ghcr.io/acidghost/yt-dlp-web:<tag>` with provenance and an SBOM. No floating
+`latest` tag is published; pin deployments to the resulting digest.
+
 For an arm64 node, build a matching arm64 `yt-dlp-oci` base first; do not
 cross-build this runtime from the amd64-only release. Both base images are
 pinned by digest in `Dockerfile`. Put a trusted HTTPS reverse proxy in front of
