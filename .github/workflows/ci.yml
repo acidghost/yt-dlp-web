@@ -19,7 +19,7 @@ jobs:
         with:
           version: 2026.9.7
       - run: bun install --frozen-lockfile
-      - run: bun run check
-      - run: bun run typecheck
-      - run: bun run test
-      - run: bun run build
+      - run: just check
+      - run: just typecheck
+      - run: just test
+      - run: just build

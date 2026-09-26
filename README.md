@@ -21,9 +21,9 @@ the imported `app/index.html` route and serves API/media via `Bun.serve` routes.
 
 ## Run
 
-Requires Bun 1.4.2, `yt-dlp[default]` (including `yt-dlp-ejs`), `ffmpeg`, and
-Deno on `PATH` (Bun is pinned in `mise.toml`). For a local Python installation,
-use the hash-locked requirements from
+Requires Bun 1.4.2, Just, `yt-dlp[default]` (including `yt-dlp-ejs`), `ffmpeg`,
+and Deno on `PATH` (Bun and Just are pinned in `mise.toml`). For a local Python
+installation, use the hash-locked requirements from
 [`yt-dlp-oci`](https://github.com/acidghost/yt-dlp-oci) with Python 3.14, or
 install the matching yt-dlp version (2026.8.19) in a virtual environment. The
 container includes these tools. Install the locked browser dependencies with
@@ -35,10 +35,10 @@ Environment variables: `PORT` (default `3000`), `HOST` (bind address, default
 
 ```sh
 bun install --frozen-lockfile
-bun run dev    # watch app/index.ts; open http://127.0.0.1:3000
-bun run check && bun run typecheck && bun run test  # port 3000 must be free
-bun run build  # native executable with embedded HTML/JS/CSS: dist/yt-dlp-web
-bun run start  # build and launch dist/yt-dlp-web
+just dev    # watch app/index.ts; open http://127.0.0.1:3000
+just check && just typecheck && just test  # port 3000 must be free
+just build  # native executable with embedded HTML/JS/CSS: dist/yt-dlp-web
+just start  # build and launch dist/yt-dlp-web
 ```
 
 Open a bookmarked URL such as
@@ -97,8 +97,8 @@ publicly; there is no login/authentication. Forward the original `Host` and
 `Origin` unchanged (do not rely on `X-Forwarded-Host`). The loopback-published
 example needs an ingress forwarding requests from `https://player.example.com`;
 browsing `http://127.0.0.1:3000` directly with that configuration will be
-rejected by the Host guard. For local browsing, use `bun run dev` with the
-default loopback settings instead.
+rejected by the Host guard. For local browsing, use `just dev` with the default
+loopback settings instead.
 
 In Kubernetes, run **one replica** with one ReadWriteOnce PVC mounted at `/data`
 (e.g. 20Gi to start); set `PUBLIC_ORIGIN` explicitly on the Deployment and use a
@@ -133,7 +133,7 @@ fetches are rejected even without an `Origin` header. CORS stays disabled — no
 from any Host. Proxy HLS sessions are capped at 16 and expire after 6 hours with
 a “Play again” message; expired sessions are evicted so capacity frees up
 without a restart. Origin checks are not authentication: only expose this behind
-a trusted network or VPN. Note: under `bun run dev`, Bun’s own dev-server guard
+a trusted network or VPN. Note: under `just dev`, Bun’s own dev-server guard
 additionally blocks foreign Host headers for the HTML page itself; the compiled
 binary serves it normally. It handles public, non-live single YouTube videos
 only; unsupported formats, playlists, accounts, cookies, and YouTube bot checks

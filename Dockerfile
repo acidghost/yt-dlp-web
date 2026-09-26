@@ -7,7 +7,7 @@ RUN bun install --frozen-lockfile --production
 COPY tsconfig.json ./
 COPY app/ app/
 COPY scripts/build.ts scripts/build.ts
-RUN bun run build
+RUN bun scripts/build.ts
 
 FROM ghcr.io/acidghost/yt-dlp-oci:2026.8.19-0@sha256:62949015c7aae0359c6278ae031b68e1db03a8f853c4983b12960f6702ed468b
 USER root

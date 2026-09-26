@@ -794,7 +794,7 @@ test("PUBLIC_ORIGIN admits only its host for reads and mutations", async () => {
     Host: "player.example.com",
     Origin: "https://player.example.com",
   };
-  // Note: under `bun run dev`, Bun's own HTML-route guard blocks foreign Hosts
+  // Note: under `just dev`, Bun's own HTML-route guard blocks foreign Hosts
   // for the page itself; the compiled binary serves it fine (covered by the
   // build smoke test). Here we verify the API surface we control.
   const listing = await fetch(`${base}/api/history`, {

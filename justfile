@@ -3,6 +3,27 @@ engine := 'docker'
 build_flags := ''
 platform_flags := '--platform linux/amd64'
 
+dev:
+    NODE_ENV=development bun --watch app/index.ts
+
+build:
+    bun scripts/build.ts
+
+start: build
+    ./dist/yt-dlp-web
+
+check:
+    biome check .
+
+format:
+    biome check --write .
+
+typecheck:
+    ./node_modules/.bin/tsc --noEmit -p tsconfig.json
+
+test:
+    bun test
+
 build-image:
     {{engine}} build {{build_flags}} {{platform_flags}} -t {{image}} .
 
@@ -15,3 +36,6 @@ run-image origin:
     {{engine}} run --rm {{platform_flags}} -p 127.0.0.1:3000:3000 \
         -e PUBLIC_ORIGIN='{{origin}}' \
         --mount type=volume,source=yt-dlp-web-data,target=/data {{image}}
+
+clean:
+  rm -rf ./dist/

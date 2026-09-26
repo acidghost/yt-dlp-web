@@ -2,17 +2,7 @@
   "name": "yt-dlp-web",
   "private": true,
   "type": "module",
-  "scripts": {
-    "dev": "NODE_ENV=development bun --watch app/index.ts",
-    "build": "bun run scripts/build.ts",
-    "start": "bun run build && ./dist/yt-dlp-web",
-    "check": "biome check .",
-    "format": "biome check --write .",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "bun test"
-  },
   "devDependencies": {
-    "@biomejs/biome": "2.5.14",
     "@types/bun": "1.4.2",
     "typescript": "7.0.2"
   },
