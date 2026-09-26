@@ -1,0 +1,7 @@
+[settings]
+minimum_release_age = "7d"
+lockfile = true
+pin = true
+
+[tools]
+bun = "1.4.2"

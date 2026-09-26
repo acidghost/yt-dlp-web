@@ -1,0 +1,243 @@
+@import "missing.css";
+
+:root {
+  color-scheme: light dark;
+
+  /* The light theme uses ink on lilac; the dark theme echoes the plum terminal. */
+  --bg: light-dark(#f5f1fa, #191322);
+  --fg: light-dark(#30223e, #f2eafa);
+  --muted-fg: light-dark(#62576d, #bcb0ca);
+  --faded-fg: light-dark(#887e92, #9586a6);
+  --graphical-fg: light-dark(#b9abc9, #59456b);
+  --plain-bg: light-dark(#eee8f5, #30243e);
+  --plain-fg: light-dark(#624288, #d1b5f1);
+  --plain-graphical-fg: light-dark(#ae9dbf, #645276);
+  --box-bg: light-dark(#fcfaff, #251b32);
+  --interactive-bg: light-dark(#eee6f6, #392b49);
+  --accent: light-dark(#713aa7, #af87ff);
+  --muted-accent: light-dark(#af87ff, #af5fff);
+  --info-bg: light-dark(#eee5fb, #37264d);
+  --info-fg: light-dark(#643591, #af87ff);
+  --info-graphical-fg: light-dark(#aa85d1, #916abf);
+
+  --border-radius: 0.45rem;
+  --interactive-border-radius: 0.35rem;
+  --shadow: none;
+  --shadow-focus: none;
+}
+
+/* missing.css colorways: these variables drive boxes, links, chips and borders. */
+.console {
+  --box-bg: light-dark(#fcfaff, #251b32);
+  --accent: light-dark(#713aa7, #af5fff);
+  --graphical-fg: light-dark(#b9abc9, #59456b);
+}
+
+.archive {
+  --box-bg: light-dark(#f0e9fa, #352547);
+  --accent: light-dark(#693896, #d787ff);
+  --graphical-fg: light-dark(#b89ad5, #74568e);
+}
+
+main {
+  max-width: 70rem;
+  margin: 1.5rem auto 4rem;
+  padding: 0 1.25rem;
+}
+
+.site-header {
+  margin: 0 0 1.5rem;
+  padding: 0 0 0.85rem;
+  border-color: var(--accent);
+}
+
+.site-header h1 {
+  margin: 0;
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  line-height: 1.2;
+}
+
+.site-header a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  text-decoration: none;
+}
+
+.site-header img {
+  inline-size: 2.8125rem;
+  block-size: 2.25rem;
+}
+
+.site-header a:hover,
+.site-header a:focus-visible {
+  text-decoration: underline;
+}
+
+.player-panel {
+  margin: 0;
+  padding: clamp(1.25rem, 3vw, 2rem);
+}
+
+.player-panel h2,
+.history-panel h2 {
+  margin-top: 0;
+}
+
+#resolve > label {
+  margin: 1rem 0 0.25rem;
+  padding: 0;
+  font-weight: 600;
+}
+
+.url-row,
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.url-row input {
+  flex: 1 1 20rem;
+  min-width: 0;
+}
+
+#url::placeholder {
+  text-align: start;
+}
+
+#player-mode {
+  inline-size: min(100%, 30rem);
+  max-width: 100%;
+}
+
+/* missing.css .iconbutton and .<big> supply the button treatment and 44px targets. */
+.url-row button,
+.history-actions button {
+  min-block-size: 2.75rem;
+  justify-content: center;
+}
+
+.url-row button {
+  min-inline-size: 2.75rem;
+}
+
+.url-row button svg,
+.history-actions button svg {
+  display: block;
+  inline-size: 1.25rem;
+  block-size: 1.25rem;
+}
+
+.history-actions button:disabled {
+  opacity: 0.5;
+}
+
+.badges > * {
+  font-size: 1rem;
+}
+
+#status {
+  min-height: 1.5rem;
+  margin: 1.25rem 0 0.35rem;
+  font-weight: 600;
+}
+
+.hint,
+.video-meta,
+.history-time,
+.history-meta {
+  color: var(--muted-fg);
+}
+
+.hint {
+  margin-top: 0;
+}
+
+#title {
+  overflow-wrap: anywhere;
+  margin: 1.5rem 0 0;
+}
+
+.video-meta {
+  margin: 0 0 1rem;
+}
+
+video {
+  display: block;
+  width: 100%;
+  max-height: 70vh;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: #000;
+  border-radius: var(--border-radius);
+}
+
+.history-panel {
+  margin: 2.25rem 0 0;
+}
+
+.history-panel h2 {
+  margin-bottom: 0.75rem;
+}
+
+.history-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem 1.5rem;
+  align-items: center;
+  padding: 1.25rem 0;
+}
+
+.history-details {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.history-details strong,
+.history-time {
+  display: block;
+}
+
+.history-details strong {
+  font-size: 1.075rem;
+  line-height: 1.3;
+}
+
+.history-time,
+.history-meta,
+.original-link {
+  font-size: 0.9rem;
+}
+
+.history-meta,
+.original-link {
+  display: block;
+  margin-top: 0.2rem;
+}
+
+.badges {
+  margin-top: 0.5rem;
+}
+
+:where(a, button, input, select):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+@media (max-width: 48rem) {
+  main {
+    margin-top: 1rem;
+  }
+
+  .history-item {
+    grid-template-columns: 1fr;
+  }
+}
