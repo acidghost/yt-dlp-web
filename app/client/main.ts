@@ -21,6 +21,7 @@ import {
 
 type Phase = "idle" | "extracting" | "downloading" | "ready" | "error";
 type Notice = { phase: Phase; text: string };
+const HISTORY_CHUNK_SIZE = 12;
 
 function fileSize(bytes: number | null): string {
   if (bytes === null) return "Size unavailable";
@@ -56,6 +57,9 @@ export class VideoApp extends LitElement {
   @state() private source: ResolvedVideo | null = null;
   @state() private history: HistoryEntry[] = [];
   @state() private historyError = "";
+  @state() private widePlayer = false;
+  @state() private showBackToPlayer = false;
+  @state() private visibleHistoryCount = HISTORY_CHUNK_SIZE;
   @state() private deleting = false;
   private historyRequest = 0;
   private watchedThisPlay = false;
@@ -84,6 +88,10 @@ export class VideoApp extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    window.addEventListener("scroll", this.updateBackToPlayer, {
+      passive: true,
+    });
+    window.addEventListener("resize", this.updateBackToPlayer);
     void this.loadHistory();
   }
 
@@ -271,7 +279,27 @@ export class VideoApp extends LitElement {
     if (this.busy) return;
     this.url = entry.url;
     this.mode = entry.available.mp4 ? "mp4" : "proxy";
+    this.focusPlayer();
     void this.prepare();
+  }
+
+  private focusPlayer(): void {
+    this.player.focus();
+    this.player.scrollIntoView({ block: "start" });
+  }
+
+  private readonly updateBackToPlayer = (): void => {
+    const player = this.querySelector("video");
+    if (player)
+      this.showBackToPlayer = player.getBoundingClientRect().bottom <= 0;
+  };
+
+  private showMoreHistory(): void {
+    this.visibleHistoryCount += HISTORY_CHUNK_SIZE;
+  }
+
+  private togglePlayerWidth(): void {
+    this.widePlayer = !this.widePlayer;
   }
 
   private async deleteEntry(
@@ -369,6 +397,8 @@ export class VideoApp extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    window.removeEventListener("scroll", this.updateBackToPlayer);
+    window.removeEventListener("resize", this.updateBackToPlayer);
     this.hls?.destroy();
     this.hls = null;
     super.disconnectedCallback();
@@ -377,8 +407,18 @@ export class VideoApp extends LitElement {
   override render() {
     return html`
       ${this.renderPlayer()}
+      ${
+        this.showBackToPlayer
+          ? html`<a class="back-to-player plain <button> <big>" href="#player"
+              @click=${this.focusPlayer}>Back to player</a>`
+          : ""
+      }
       ${this.renderHistory()}
     `;
+  }
+
+  override updated(): void {
+    this.updateBackToPlayer();
   }
 
   private renderPlayer() {
@@ -390,28 +430,30 @@ export class VideoApp extends LitElement {
           : "info color";
 
     return html`
-      <section class="player-panel box console" aria-labelledby="player-title">
-        <h2 id="player-title">Player</h2>
+      <section class=${`player-panel console${this.widePlayer ? " wide-player" : ""}`} aria-labelledby="player-title">
+        <h2 id="player-title" class="vh">Player</h2>
         <form id="resolve" @submit=${this.submit}>
-          <label for="url">YouTube video URL</label>
-          <div class="url-row">
+          <label class="vh" for="url">YouTube video URL</label>
+          <label class="vh" for="player-mode">Playback mode</label>
+          <div class="player-controls tool-bar">
             <input id="url" type="url" placeholder="https://www.youtube.com/watch?v=…"
               autocomplete="url" required .value=${this.url} @input=${this.changeUrl}
               ?disabled=${this.busy}>
+            <select id="player-mode" .value=${this.mode} @change=${this.changeMode}
+              ?disabled=${this.busy}>
+              <option value="proxy">Proxy YouTube HLS (starts sooner)</option>
+              <option value="hls">Download + HLS.js</option>
+              <option value="mp4">Download + Native MP4</option>
+            </select>
             <strong>
               <button class="console <big>" type="submit" aria-label="Prepare video"
                 title="Prepare video" ?disabled=${this.busy}>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#prepare-icon"></use></svg>
               </button>
             </strong>
+            <button class="plain <big>" type="button" aria-pressed=${this.widePlayer}
+              @click=${this.togglePlayerWidth}>Fill page</button>
           </div>
-          <label for="player-mode">Playback mode</label>
-          <select id="player-mode" .value=${this.mode} @change=${this.changeMode}
-            ?disabled=${this.busy}>
-            <option value="proxy">Proxy YouTube HLS (starts sooner)</option>
-            <option value="hls">Download + HLS.js</option>
-            <option value="mp4">Download + Native MP4</option>
-          </select>
         </form>
         <p id="status" class=${statusColorway} data-phase=${this.notice.phase} role="status" aria-live="polite">${this.notice.text}</p>
         ${
@@ -432,24 +474,30 @@ export class VideoApp extends LitElement {
             : ""
         }
         <!-- biome-ignore lint/a11y/useMediaCaption: Captions are not extracted in this app. -->
-        <video id="player" controls playsinline preload="none" aria-label="Video player"
+        <video id="player" controls playsinline preload="none" tabindex="0" aria-label="Video player"
           @play=${this.startedPlay} @playing=${this.playing} @error=${this.playbackError}></video>
       </section>
     `;
   }
 
   private renderHistory() {
+    const visibleEntries = this.history.slice(0, this.visibleHistoryCount);
+    const remaining = this.history.length - visibleEntries.length;
     return html`
       <section class="history-panel archive" aria-labelledby="history-title">
-        <h2 id="history-title" tabindex="-1">Watch history</h2>
+        <div class="history-heading">
+          <h2 id="history-title" tabindex="-1">Watch history</h2>
+          ${this.history.length > 0 ? html`<span class="history-count">Showing ${visibleEntries.length} of ${this.history.length} ${this.history.length === 1 ? "video" : "videos"}</span>` : ""}
+        </div>
         ${this.historyError ? html`<p class="bad color" role="alert">${this.historyError}</p>` : ""}
         ${
           this.history.length === 0
             ? html`<p>Videos you play will appear here.</p>`
             : html`
           <ul class="history-list">
-            ${this.history.map((entry) => this.renderHistoryEntry(entry))}
+            ${visibleEntries.map((entry) => this.renderHistoryEntry(entry))}
           </ul>
+          ${remaining > 0 ? html`<div class="history-navigation tool-bar"><button class="plain <big>" type="button" @click=${this.showMoreHistory}>Show ${Math.min(remaining, HISTORY_CHUNK_SIZE)} more</button></div>` : ""}
         `
         }
       </section>

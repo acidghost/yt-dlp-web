@@ -114,3 +114,84 @@ test("missing HLS keeps the downloaded MP4 available after a mode switch", async
   await expect(page.locator("#status")).toHaveAttribute("data-phase", "ready");
   await expect(page.locator("video")).toHaveAttribute("src", video.stream);
 });
+
+test("theater width and history chunks keep the player in place", async ({
+  page,
+}) => {
+  const entries = Array.from({ length: 25 }, (_, index) => ({
+    ...entry(`Video ${index + 1}`),
+    id: `video${String(index).padStart(6, "0")}`,
+  }));
+  await page.route("**/api/history", (route) =>
+    route.fulfill({ json: entries }),
+  );
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+
+  await expect(page.locator(".history-item")).toHaveCount(12);
+  await expect(page.getByText("Showing 12 of 25 videos")).toBeVisible();
+  const player = await page.locator("video").elementHandle();
+  const panel = page.locator(".player-panel");
+  const standardWidth = (await panel.boundingBox())?.width ?? 0;
+  const headerWidth =
+    (await page.locator(".site-header").boundingBox())?.width ?? 0;
+  const historyWidth =
+    (await page.locator(".history-panel").boundingBox())?.width ?? 0;
+  expect(Math.abs(standardWidth - headerWidth)).toBeLessThan(2);
+  expect(Math.abs(standardWidth - historyWidth)).toBeLessThan(2);
+  const videoWidth = (await page.locator("video").boundingBox())?.width ?? 0;
+  await expect(panel).not.toHaveClass(/\bbox\b/);
+  expect(Math.abs(videoWidth - standardWidth)).toBeLessThan(2);
+  const controlTops = await Promise.all(
+    [
+      page.getByLabel("YouTube video URL"),
+      page.getByLabel("Playback mode"),
+      page.getByRole("button", { name: "Prepare video" }),
+      page.getByRole("button", { name: "Fill page" }),
+    ].map(async (control) => (await control.boundingBox())?.y ?? -1),
+  );
+  expect(Math.max(...controlTops) - Math.min(...controlTops)).toBeLessThan(5);
+  const fillPage = page.getByRole("button", { name: "Fill page" });
+  await fillPage.click();
+  await expect(fillPage).toHaveAttribute("aria-pressed", "true");
+  expect((await panel.boundingBox())?.width).toBeGreaterThan(standardWidth);
+  expect(
+    await page.evaluate(
+      (original) => document.querySelector("video") === original,
+      player,
+    ),
+  ).toBe(true);
+
+  await page.getByRole("button", { name: "Show 12 more" }).click();
+  await expect(page.locator(".history-item")).toHaveCount(24);
+  await page.getByRole("button", { name: "Show 1 more" }).click();
+  await expect(page.locator(".history-item")).toHaveCount(25);
+  await expect(page.getByRole("button", { name: /Show .* more/ })).toHaveCount(
+    0,
+  );
+  const backToPlayer = page.getByRole("link", { name: "Back to player" });
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await expect(backToPlayer).toHaveCount(0);
+  await page.evaluate(() => {
+    const videoElement = document.querySelector("video");
+    if (!videoElement) throw new Error("Missing player");
+    window.scrollTo(
+      0,
+      window.scrollY + videoElement.getBoundingClientRect().bottom + 1,
+    );
+  });
+  await expect(backToPlayer).toBeVisible();
+  expect(
+    await backToPlayer.evaluate(
+      (element) => getComputedStyle(element).position,
+    ),
+  ).toBe("fixed");
+  await backToPlayer.click();
+  await expect(page.locator("#player")).toBeFocused();
+  await expect(backToPlayer).toHaveCount(0);
+
+  await page.setViewportSize({ width: 375, height: 812 });
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(375);
+});
