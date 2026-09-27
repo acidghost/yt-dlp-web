@@ -22,7 +22,13 @@ typecheck:
     ./node_modules/.bin/tsc --noEmit -p tsconfig.json
 
 test:
-    bun test
+    bun test tests/
+
+test-client: _browser
+    node_modules/.bin/playwright test
+
+_browser:
+    node_modules/.bin/playwright install chromium
 
 build-image:
     {{engine}} build {{build_flags}} {{platform_flags}} -t {{image}} .

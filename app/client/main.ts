@@ -1,7 +1,16 @@
 import Hls from "hls.js";
 import { html, LitElement } from "lit";
 import { customElement, state } from "lit/decorators.js";
-import type { HistoryEntry, ResolvedVideo } from "../protocol";
+import {
+  ApiErrorSchema,
+  type HistoryEntry,
+  HistoryListSchema,
+  OkResponseSchema,
+  type ResolvedVideo,
+  ResolvedVideoSchema,
+  type ResolveRequest,
+  type WatchRequest,
+} from "../protocol";
 import {
   handoffSearch,
   type PlayerMode,
@@ -10,8 +19,8 @@ import {
   reuseSource,
 } from "./handoff";
 
-type Source = ResolvedVideo & { kind: "proxy" | "download" };
 type Phase = "idle" | "extracting" | "downloading" | "ready" | "error";
+type Notice = { phase: Phase; text: string };
 
 function fileSize(bytes: number | null): string {
   if (bytes === null) return "Size unavailable";
@@ -39,34 +48,37 @@ export class VideoApp extends LitElement {
   }
 
   @state() private mode: PlayerMode = "proxy";
-  @state() private phase: Phase = "idle";
-  @state() private status = "Paste a public YouTube video URL to get started.";
-  @state() private video: Pick<
-    ResolvedVideo,
-    "title" | "duration" | "channel"
-  > | null = null;
+  @state() private url = "";
+  @state() private notice: Notice = {
+    phase: "idle",
+    text: "Paste a public YouTube video URL to get started.",
+  };
+  @state() private source: ResolvedVideo | null = null;
   @state() private history: HistoryEntry[] = [];
   @state() private historyError = "";
-  @state() private pending = false;
   @state() private deleting = false;
-  private source: Source | null = null;
+  private historyRequest = 0;
   private watchedThisPlay = false;
   private hls: Hls | null = null;
 
-  // True while any network action blocks new ones.
   private get busy(): boolean {
-    return this.pending || this.deleting;
+    return (
+      this.deleting ||
+      this.notice.phase === "extracting" ||
+      this.notice.phase === "downloading"
+    );
   }
 
   private fail(message: string): void {
-    this.phase = "error";
-    this.status = message;
+    this.notice = { phase: "error", text: message };
   }
 
   private attachReady(): void {
     if (this.attachSource()) {
-      this.phase = "ready";
-      this.status = "Ready. Press play in the video controls.";
+      this.notice = {
+        phase: "ready",
+        text: "Ready. Press play in the video controls.",
+      };
     }
   }
 
@@ -79,21 +91,14 @@ export class VideoApp extends LitElement {
     const handoff = parseHandoff(window.location.search);
     if (!handoff) return;
     if ("error" in handoff) {
-      this.urlInput.value =
-        new URLSearchParams(window.location.search).get("url") ?? "";
+      this.url = new URLSearchParams(window.location.search).get("url") ?? "";
       this.fail(handoff.error);
       return;
     }
-    this.urlInput.value = handoff.url;
+    this.url = handoff.url;
     this.mode = handoff.mode;
     // Prepare the selected source, but never start browser playback automatically.
     void this.prepare(false);
-  }
-
-  private get urlInput(): HTMLInputElement {
-    const input = this.querySelector<HTMLInputElement>("#url");
-    if (!input) throw new Error("Missing URL input");
-    return input;
   }
 
   private get player(): HTMLVideoElement {
@@ -103,12 +108,16 @@ export class VideoApp extends LitElement {
   }
 
   private async loadHistory(): Promise<void> {
+    const request = ++this.historyRequest;
     try {
       const response = await fetch("/api/history");
       if (!response.ok) throw new Error("Could not load history.");
-      this.history = await response.json();
+      const entries = HistoryListSchema.parse(await response.json());
+      if (request !== this.historyRequest) return;
+      this.history = entries;
       this.historyError = "";
     } catch {
+      if (request !== this.historyRequest) return;
       this.historyError =
         "Could not load watch history. Playback is still available.";
     }
@@ -126,7 +135,7 @@ export class VideoApp extends LitElement {
   private attachSource(): boolean {
     const source = this.source;
     if (!source) return false;
-    if (this.mode === "mp4" && source.stream) {
+    if (this.mode === "mp4" && source.kind === "download") {
       this.player.src = source.stream;
       return true;
     }
@@ -156,7 +165,7 @@ export class VideoApp extends LitElement {
   }
 
   private updateAddress(): void {
-    const url = this.urlInput.value.trim();
+    const url = this.url.trim();
     const search = url ? `?${handoffSearch(url, this.mode)}` : "";
     window.history.replaceState(
       null,
@@ -170,9 +179,13 @@ export class VideoApp extends LitElement {
     void this.prepare();
   }
 
+  private changeUrl(event: Event): void {
+    this.url = (event.currentTarget as HTMLInputElement).value;
+  }
+
   private async prepare(updateAddress = true): Promise<void> {
     if (this.busy) return;
-    const url = this.urlInput.value.trim();
+    const url = this.url.trim();
     if (updateAddress) this.updateAddress();
     if (!url) {
       this.fail("Enter a video URL.");
@@ -182,40 +195,42 @@ export class VideoApp extends LitElement {
     const focused = this.ownerDocument.activeElement;
     this.source = null;
     this.resetPlayer();
-    this.video = null;
 
     const kind = resolveKind(this.mode);
-    this.phase = kind === "proxy" ? "extracting" : "downloading";
-    this.status =
+    this.notice =
       kind === "proxy"
-        ? "Extracting YouTube HLS tracks…"
-        : "Checking saved files, downloading if needed, then packaging HLS…";
-    this.pending = true;
+        ? { phase: "extracting", text: "Extracting YouTube HLS tracks…" }
+        : {
+            phase: "downloading",
+            text: "Checking saved files, downloading if needed, then packaging HLS…",
+          };
 
     try {
+      const request: ResolveRequest = { url, mode: kind };
       const response = await fetch("/api/resolve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, mode: kind }),
+        body: JSON.stringify(request),
       });
-      const data: ResolvedVideo & { error?: string } = await response.json();
-      if (!response.ok)
-        throw new Error(data.error ?? "Could not prepare video.");
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        const failure = ApiErrorSchema.safeParse(payload);
+        throw new Error(
+          failure.success ? failure.data.error : "Could not prepare video.",
+        );
+      }
+      const result = ResolvedVideoSchema.safeParse(payload);
+      if (!result.success || result.data.kind !== kind)
+        throw new Error("Server returned an invalid video response.");
 
-      this.source = { ...data, kind };
-      this.video = {
-        title: data.title,
-        duration: data.duration,
-        channel: data.channel,
-      };
+      this.source = result.data;
       this.attachReady();
-      await this.loadHistory();
+      void this.loadHistory();
     } catch (error) {
       this.fail(
         error instanceof Error ? error.message : "Could not prepare video.",
       );
     } finally {
-      this.pending = false;
       await this.updateComplete;
       if (
         focused instanceof HTMLElement &&
@@ -234,8 +249,10 @@ export class VideoApp extends LitElement {
     if (this.busy) return;
 
     if (!this.source) {
-      this.status = "Press Prepare video to use the selected mode.";
-      this.phase = "idle";
+      this.notice = {
+        phase: "idle",
+        text: "Press Prepare video to use the selected mode.",
+      };
       return;
     }
 
@@ -252,7 +269,7 @@ export class VideoApp extends LitElement {
 
   private replay(entry: HistoryEntry): void {
     if (this.busy) return;
-    this.urlInput.value = entry.url;
+    this.url = entry.url;
     this.mode = entry.available.mp4 ? "mp4" : "proxy";
     void this.prepare();
   }
@@ -269,7 +286,6 @@ export class VideoApp extends LitElement {
 
     if (this.source?.id === entry.id) {
       this.source = null;
-      this.video = null;
       this.resetPlayer();
     }
 
@@ -278,15 +294,25 @@ export class VideoApp extends LitElement {
       const path = `/api/history/${entry.id}${filesOnly ? "/files" : ""}`;
       const response = await fetch(path, { method: "DELETE" });
       if (!response.ok) {
-        const data: { error?: string } = await response.json();
-        throw new Error(data.error ?? "Could not delete video.");
+        const failure = ApiErrorSchema.safeParse(
+          await response.json().catch(() => null),
+        );
+        throw new Error(
+          failure.success ? failure.data.error : "Could not delete video.",
+        );
       }
 
+      const payload: unknown = await response.json().catch(() => null);
+      if (!OkResponseSchema.safeParse(payload).success)
+        throw new Error("Server returned an invalid delete response.");
+
       await this.loadHistory();
-      this.phase = "idle";
-      this.status = filesOnly
-        ? "Downloaded files deleted."
-        : "Files and history deleted.";
+      this.notice = {
+        phase: "idle",
+        text: filesOnly
+          ? "Downloaded files deleted."
+          : "Files and history deleted.",
+      };
     } catch (error) {
       this.fail(
         error instanceof Error ? error.message : "Could not delete video.",
@@ -312,16 +338,24 @@ export class VideoApp extends LitElement {
     if (!source || this.watchedThisPlay) return;
     this.watchedThisPlay = true;
     try {
+      const request: WatchRequest = { token: source.token };
       const response = await fetch(`/api/history/${source.id}/watched`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: source.token }),
+        body: JSON.stringify(request),
       });
-      if (!response.ok) throw new Error("Could not save watch history.");
-      await this.loadHistory();
+      if (
+        !response.ok ||
+        !OkResponseSchema.safeParse(await response.json()).success
+      )
+        throw new Error("Could not save watch history.");
+      void this.loadHistory();
     } catch {
       if (this.source === source)
-        this.status = "Playing, but could not save watch history.";
+        this.notice = {
+          ...this.notice,
+          text: "Playing, but could not save watch history.",
+        };
     }
   }
 
@@ -341,10 +375,17 @@ export class VideoApp extends LitElement {
   }
 
   override render() {
+    return html`
+      ${this.renderPlayer()}
+      ${this.renderHistory()}
+    `;
+  }
+
+  private renderPlayer() {
     const statusColorway =
-      this.phase === "error"
+      this.notice.phase === "error"
         ? "bad color"
-        : this.phase === "ready"
+        : this.notice.phase === "ready"
           ? "ok color"
           : "info color";
 
@@ -355,7 +396,8 @@ export class VideoApp extends LitElement {
           <label for="url">YouTube video URL</label>
           <div class="url-row">
             <input id="url" type="url" placeholder="https://www.youtube.com/watch?v=…"
-              autocomplete="url" required ?disabled=${this.busy}>
+              autocomplete="url" required .value=${this.url} @input=${this.changeUrl}
+              ?disabled=${this.busy}>
             <strong>
               <button class="console <big>" type="submit" aria-label="Prepare video"
                 title="Prepare video" ?disabled=${this.busy}>
@@ -371,9 +413,9 @@ export class VideoApp extends LitElement {
             <option value="mp4">Download + Native MP4</option>
           </select>
         </form>
-        <p id="status" class=${statusColorway} data-phase=${this.phase} role="status" aria-live="polite">${this.status}</p>
+        <p id="status" class=${statusColorway} data-phase=${this.notice.phase} role="status" aria-live="polite">${this.notice.text}</p>
         ${
-          this.phase === "error"
+          this.notice.phase === "error"
             ? html`<p class="hint">${
                 this.mode === "proxy"
                   ? "Retry preparation or choose a download mode."
@@ -384,15 +426,20 @@ export class VideoApp extends LitElement {
             : ""
         }
         ${
-          this.video
-            ? html`<h3 id="title">${this.video.title}</h3>
-          <p class="video-meta">${this.video.channel ? html`${this.video.channel} · ` : ""}${durationLabel(this.video.duration)}</p>`
+          this.source
+            ? html`<h3 id="title">${this.source.title}</h3>
+          <p class="video-meta">${this.source.channel ? html`${this.source.channel} · ` : ""}${durationLabel(this.source.duration)}</p>`
             : ""
         }
         <!-- biome-ignore lint/a11y/useMediaCaption: Captions are not extracted in this app. -->
         <video id="player" controls playsinline preload="none" aria-label="Video player"
           @play=${this.startedPlay} @playing=${this.playing} @error=${this.playbackError}></video>
       </section>
+    `;
+  }
+
+  private renderHistory() {
+    return html`
       <section class="history-panel archive" aria-labelledby="history-title">
         <h2 id="history-title" tabindex="-1">Watch history</h2>
         ${this.historyError ? html`<p class="bad color" role="alert">${this.historyError}</p>` : ""}
@@ -401,51 +448,53 @@ export class VideoApp extends LitElement {
             ? html`<p>Videos you play will appear here.</p>`
             : html`
           <ul class="history-list">
-            ${this.history.map(
-              (entry) => html`
-              <li class="history-item border-block-start" data-id=${entry.id}>
-                <div class="history-details">
-                  <strong>${entry.title}</strong>
-                  <span class="history-meta">${entry.channel ?? "Channel unavailable"} · ${durationLabel(entry.duration)}</span>
-                  <span class="history-time">Watched ${new Date(entry.lastWatchedAt).toLocaleString()}</span>
-                  <a class="original-link" href=${entry.url} target="_blank" rel="noopener noreferrer"
-                    aria-label=${`Open ${entry.title} on YouTube`}>Open on YouTube ↗</a>
-                  <span class="badges" aria-label="Downloaded files">
-                    ${entry.available.mp4 ? html`<chip class="archive">MP4 · ${fileSize(entry.sizeBytes.mp4)}</chip>` : ""}
-                    ${entry.available.hls ? html`<chip class="archive">HLS · ${fileSize(entry.sizeBytes.hls)}</chip>` : ""}
-                    ${!entry.available.mp4 && !entry.available.hls ? html`<chip class="plain">No files</chip>` : ""}
-                  </span>
-                </div>
-                <div class="history-actions tool-bar">
-                  <button class="history-play info iconbutton <big>" type="button"
-                    aria-label=${`Play ${entry.title}`} title="Play" ?disabled=${this.busy}
-                    @click=${() => this.replay(entry)}>
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#play-icon"></use></svg>
-                  </button>
-                  ${
-                    entry.available.mp4 || entry.available.hls
-                      ? html`
-                    <button class="warn iconbutton <big>" type="button"
-                      aria-label=${`Delete downloaded files for ${entry.title}`} title="Delete files"
-                      ?disabled=${this.busy} @click=${() => this.deleteEntry(entry, true)}>
-                      <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#delete-file-icon"></use></svg>
-                    </button>
-                  `
-                      : ""
-                  }
-                  <button class="bad iconbutton <big>" type="button"
-                    aria-label=${`Delete files and history for ${entry.title}`} title="Delete files and history"
-                    ?disabled=${this.busy} @click=${() => this.deleteEntry(entry, false)}>
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#delete-history-icon"></use></svg>
-                  </button>
-                </div>
-              </li>
-            `,
-            )}
+            ${this.history.map((entry) => this.renderHistoryEntry(entry))}
           </ul>
         `
         }
       </section>
+    `;
+  }
+
+  private renderHistoryEntry(entry: HistoryEntry) {
+    return html`
+      <li class="history-item border-block-start" data-id=${entry.id}>
+        <div class="history-details">
+          <strong>${entry.title}</strong>
+          <span class="history-meta">${entry.channel ?? "Channel unavailable"} · ${durationLabel(entry.duration)}</span>
+          <span class="history-time">Watched ${new Date(entry.lastWatchedAt).toLocaleString()}</span>
+          <a class="original-link" href=${entry.url} target="_blank" rel="noopener noreferrer"
+            aria-label=${`Open ${entry.title} on YouTube`}>Open on YouTube ↗</a>
+          <span class="badges" aria-label="Downloaded files">
+            ${entry.available.mp4 ? html`<chip class="archive">MP4 · ${fileSize(entry.sizeBytes.mp4)}</chip>` : ""}
+            ${entry.available.hls ? html`<chip class="archive">HLS · ${fileSize(entry.sizeBytes.hls)}</chip>` : ""}
+            ${!entry.available.mp4 && !entry.available.hls ? html`<chip class="plain">No files</chip>` : ""}
+          </span>
+        </div>
+        <div class="history-actions tool-bar">
+          <button class="history-play info iconbutton <big>" type="button"
+            aria-label=${`Play ${entry.title}`} title="Play" ?disabled=${this.busy}
+            @click=${() => this.replay(entry)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#play-icon"></use></svg>
+          </button>
+          ${
+            entry.available.mp4 || entry.available.hls
+              ? html`
+            <button class="warn iconbutton <big>" type="button"
+              aria-label=${`Delete downloaded files for ${entry.title}`} title="Delete files"
+              ?disabled=${this.busy} @click=${() => this.deleteEntry(entry, true)}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#delete-file-icon"></use></svg>
+            </button>
+          `
+              : ""
+          }
+          <button class="bad iconbutton <big>" type="button"
+            aria-label=${`Delete files and history for ${entry.title}`} title="Delete files and history"
+            ?disabled=${this.busy} @click=${() => this.deleteEntry(entry, false)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#delete-history-icon"></use></svg>
+          </button>
+        </div>
+      </li>
     `;
   }
 }

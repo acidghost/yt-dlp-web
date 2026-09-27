@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PackageHls } from "../app/hls";
 import { canonicalVideoUrl, type Download, InputError } from "../app/media";
+import { HistoryListSchema, ResolvedVideoSchema } from "../app/protocol";
 import { startServer } from "../app/server";
 
 const url = "https://www.youtube.com/watch?v=abcdefghijk";
@@ -129,7 +130,9 @@ test("downloads a private MP4 file before returning a local stream link", async 
   const base = await launch();
   const response = await resolve(base);
   expect(response.status).toBe(200);
-  const data = await response.json();
+  const data = ResolvedVideoSchema.parse(await response.json());
+  expect(data.kind).toBe("download");
+  if (data.kind !== "download") throw new Error("Expected a download");
   expect(data.title).toBe("Fixture");
   expect(data.stream).toBe("/api/stream/abcdefghijk");
   expect(data.hls).toBe("/api/hls/abcdefghijk/index.m3u8");
@@ -172,8 +175,10 @@ test("proxies a nested HLS master, audio, map and ranged segments without downlo
     body: JSON.stringify({ url, mode: "proxy" }),
   });
   expect(response.status).toBe(200);
-  const data = await response.json();
-  expect(data.stream).toBeUndefined();
+  const data = ResolvedVideoSchema.parse(await response.json());
+  expect(data.kind).toBe("proxy");
+  if (data.kind !== "proxy") throw new Error("Expected a proxy");
+  expect("stream" in data).toBe(false);
   expect(data.hls).toMatch(/^\/api\/proxy\/[\da-f-]+\/0$/);
   expect(await Bun.file(join(testDir, "anything.mp4")).exists()).toBe(false);
   const master = await (await fetch(`${base}${data.hls}`)).text();
@@ -311,6 +316,39 @@ test("download failures are reported and never create a playable session", async
   expect((await response.json()).error).toBe("Download failed.");
 });
 
+test("rejects malformed JSON shapes before preparing or recording a watch", async () => {
+  const base = await launch();
+  const badResolve = await fetch(`${base}/api/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, mode: 42 }),
+  });
+  expect(badResolve.status).toBe(400);
+  expect(await badResolve.json()).toEqual({ error: "Invalid request." });
+  expect(
+    ResolvedVideoSchema.safeParse({
+      kind: "download",
+      id: "abcdefghijk",
+      url,
+      token: "token",
+      title: "Incomplete",
+      channel: null,
+      duration: null,
+    }).success,
+  ).toBe(false);
+
+  const resolved = ResolvedVideoSchema.parse(
+    await (await resolve(base)).json(),
+  );
+  const badWatch = await fetch(`${base}/api/history/${resolved.id}/watched`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: 42 }),
+  });
+  expect(badWatch.status).toBe(400);
+  expect(HistoryListSchema.parse(await history(base))).toEqual([]);
+});
+
 const history = (base: string) =>
   fetch(`${base}/api/history`).then((r) => r.json());
 const watched = (base: string, id: string, token: string, extra = {}) =>
@@ -341,8 +379,10 @@ test("history is written only for a successfully resolved, playing proxy; surviv
       })
     ).status,
   ).toBe(200);
-  const rows = await history(base);
+  const rows = HistoryListSchema.parse(await history(base));
   expect(rows).toHaveLength(1);
+  const firstRow = rows[0];
+  if (!firstRow) throw new Error("Expected a history row");
   expect(rows[0]).toMatchObject({
     id: "abcdefghijk",
     url,
@@ -352,14 +392,14 @@ test("history is written only for a successfully resolved, playing proxy; surviv
     available: { mp4: false, hls: false },
     sizeBytes: { mp4: null, hls: null },
   });
-  expect(Number.isNaN(Date.parse(rows[0].lastWatchedAt))).toBe(false);
+  expect(Number.isNaN(Date.parse(firstRow.lastWatchedAt))).toBe(false);
   server?.stop(true);
   const restarted = await launch(undefined, true, true);
   expect(await history(restarted)).toEqual(rows);
   const replay = await fetch(`${restarted}/api/resolve`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: rows[0].url, mode: "proxy" }),
+    body: JSON.stringify({ url: firstRow.url, mode: "proxy" }),
   });
   expect(replay.status).toBe(200);
   expect((await replay.json()).token).not.toBe(resolved.token);

@@ -32,6 +32,12 @@
     "experimentalDecorators": true,
     "useDefineForClassFields": false
   },
-  "include": ["app/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"],
+  "include": [
+    "app/**/*.ts",
+    "tests/**/*.ts",
+    "e2e/**/*.ts",
+    "scripts/**/*.ts",
+    "playwright.config.ts"
+  ],
   "exclude": ["dist", "tmp", "data", "node_modules"]
 }

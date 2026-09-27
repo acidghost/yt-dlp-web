@@ -27,4 +27,5 @@ jobs:
       - run: just check
       - run: just typecheck
       - run: just test
+      - run: just test-client
       - run: just build

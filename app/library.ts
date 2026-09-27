@@ -191,7 +191,7 @@ export class Library {
           lastWatchedAt: row.last_watched_at,
           available: { mp4: mp4Bytes !== null, hls: hlsBytes !== null },
           sizeBytes: { mp4: mp4Bytes, hls: hlsBytes },
-        };
+        } satisfies HistoryEntry;
       }),
     );
   }

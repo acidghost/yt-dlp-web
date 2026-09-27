@@ -37,6 +37,7 @@ Environment variables: `PORT` (default `3000`), `HOST` (bind address, default
 bun install --frozen-lockfile
 just dev    # watch app/index.ts; open http://127.0.0.1:3000
 just check && just typecheck && just test  # port 3000 must be free
+just test-client  # port 3000 must be free
 just build  # native executable with embedded HTML/JS/CSS: dist/yt-dlp-web
 just start  # build and launch dist/yt-dlp-web
 ```

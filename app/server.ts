@@ -13,16 +13,32 @@ import {
   extractHls as extractYouTubeHls,
   InputError,
 } from "./media";
-import type { ResolvedVideo } from "./protocol";
+import {
+  type ApiError,
+  type ApiResponse,
+  type OkResponse,
+  type ResolvedVideo,
+  type ResolveRequest,
+  ResolveRequestSchema,
+  type WatchRequest,
+  WatchRequestSchema,
+} from "./protocol";
 import { ProxySession, type UpstreamFetch } from "./proxy";
 
-const json = (value: unknown, status = 200) =>
+const json = (value: ApiResponse, status = 200) =>
   Response.json(value, {
     status,
     headers: {
       "Cache-Control": "no-store",
     },
   });
+
+const jsonError = (error: string, status = 500) =>
+  json({ error } satisfies ApiError, status);
+
+const jsonOK = () => json({ ok: true } satisfies OkResponse);
+
+const notFound = () => jsonError("Not found.", 404);
 
 // Owns the whole "small JSON POST body" contract: content type, size cap
 // while streaming (chunked-safe), and parsing. Returns either the parsed
@@ -31,11 +47,11 @@ type JsonBody = { value: unknown } | { response: Response };
 
 async function jsonBody(request: Request): Promise<JsonBody> {
   if (!request.headers.get("content-type")?.startsWith("application/json"))
-    return { response: json({ error: "Expected application/json." }, 415) };
+    return { response: jsonError("Expected application/json.", 415) };
   if (Number(request.headers.get("content-length")) > 2048)
-    return { response: json({ error: "Request is too large." }, 400) };
+    return { response: jsonError("Request is too large.", 400) };
   const reader = request.body?.getReader();
-  if (!reader) return { response: json({ error: "Expected JSON body." }, 400) };
+  if (!reader) return { response: jsonError("Expected JSON body.", 400) };
   let size = 0;
   const chunks: Uint8Array[] = [];
   try {
@@ -44,7 +60,7 @@ async function jsonBody(request: Request): Promise<JsonBody> {
       if (done) break;
       size += value.byteLength;
       if (size > 2048)
-        return { response: json({ error: "Request is too large." }, 400) };
+        return { response: jsonError("Request is too large.", 400) };
       chunks.push(value);
     }
   } finally {
@@ -57,7 +73,7 @@ async function jsonBody(request: Request): Promise<JsonBody> {
       ),
     };
   } catch {
-    return { response: json({ error: "Expected JSON body." }, 400) };
+    return { response: jsonError("Expected JSON body.", 400) };
   }
 }
 
@@ -135,16 +151,10 @@ export function startServer({
       hls: boolean;
     }>
   >();
-  const resolved = new Map<
-    string,
-    ResolvedVideo & { kind: "proxy" | "download" }
-  >();
+  const resolved = new Map<string, ResolvedVideo>();
   // Registers a resolved video's watch token and returns it as JSON.
-  const publish = (
-    video: ResolvedVideo,
-    kind: "proxy" | "download",
-  ): Response => {
-    resolved.set(video.token, { ...video, kind });
+  const publish = (video: ResolvedVideo): Response => {
+    resolved.set(video.token, video);
     return json(video);
   };
   const library = new Library(dataDir);
@@ -212,7 +222,7 @@ export function startServer({
         (origin === null || origins.includes(origin.toLowerCase()));
       return provenanceOk
         ? handler(request)
-        : json({ error: "Invalid origin." }, 403);
+        : jsonError("Invalid origin.", 403);
     };
   // Mutations add a same-origin Fetch-Metadata requirement on top of the read
   // guard, which covers no-Origin browser form attempts. CORS stays disabled.
@@ -222,7 +232,7 @@ export function startServer({
     readRoute((request) => {
       const site = request.headers.get("sec-fetch-site");
       return site !== null && site.toLowerCase() !== "same-origin"
-        ? json({ error: "Invalid origin." }, 403)
+        ? jsonError("Invalid origin.", 403)
         : handler(request);
     });
   const sweepExpiredProxies = (): void => {
@@ -230,16 +240,15 @@ export function startServer({
       if (Date.now() - proxy.createdAt > sessionTtlMs) proxies.delete(token);
   };
 
-  async function resolveVideo(body: unknown) {
+  async function resolveVideo(body: ResolveRequest) {
     try {
-      const parsed = body as { url?: unknown; mode?: unknown };
-      const videoUrl = canonicalVideoUrl(parsed?.url);
+      const videoUrl = canonicalVideoUrl(body.url);
       const id = videoUrl.slice(-11);
-      if (parsed.mode === "proxy") {
+      if (body.mode === "proxy") {
         sweepExpiredProxies();
         if (proxies.size >= 16 || activeExtractions >= 2)
-          return json(
-            { error: "Too many HLS sessions. Retry or restart the server." },
+          return jsonError(
+            "Too many HLS sessions. Retry or restart the server.",
             429,
           );
 
@@ -251,32 +260,28 @@ export function startServer({
           await proxy.prepare(token);
           proxies.set(token, proxy);
 
-          return publish(
-            {
-              id,
-              url: videoUrl,
-              token,
-              title: source.title,
-              channel: source.channel,
-              duration: source.duration,
-              hls: `/api/proxy/${token}/0`,
-            },
-            "proxy",
-          );
+          return publish({
+            kind: "proxy",
+            id,
+            url: videoUrl,
+            token,
+            title: source.title,
+            channel: source.channel,
+            duration: source.duration,
+            hls: `/api/proxy/${token}/0`,
+          });
         } finally {
           activeExtractions--;
         }
       }
 
-      if (parsed.mode !== undefined && parsed.mode !== "download")
-        throw new InputError("Unknown playback mode.");
       if (deleting.has(id))
-        return json({ error: "Video is being deleted. Retry later." }, 409);
+        return jsonError("Video is being deleted. Retry later.", 409);
 
       let task = preparing.get(id);
       if (!task) {
         if (activeDownloads >= 2)
-          return json({ error: "Two downloads are already in progress." }, 429);
+          return jsonError("Two downloads are already in progress.", 429);
 
         activeDownloads++;
         task = prepareDownload(id, videoUrl);
@@ -291,27 +296,22 @@ export function startServer({
 
       const video = await task;
 
-      return publish(
-        {
-          id,
-          url: videoUrl,
-          token: crypto.randomUUID(),
-          title: video.title,
-          channel: video.channel,
-          duration: video.duration,
-          stream: `/api/stream/${id}`,
-          ...(video.hls ? { hls: `/api/hls/${id}/index.m3u8` } : {}),
-        },
-        "download",
-      );
+      return publish({
+        kind: "download",
+        id,
+        url: videoUrl,
+        token: crypto.randomUUID(),
+        title: video.title,
+        channel: video.channel,
+        duration: video.duration,
+        stream: `/api/stream/${id}`,
+        ...(video.hls ? { hls: `/api/hls/${id}/index.m3u8` } : {}),
+      });
     } catch (error) {
-      return json(
-        {
-          error:
-            error instanceof InputError
-              ? error.message
-              : "Could not prepare video.",
-        },
+      return jsonError(
+        error instanceof InputError
+          ? error.message
+          : "Could not prepare video.",
         error instanceof InputError ? 400 : 502,
       );
     }
@@ -371,16 +371,14 @@ export function startServer({
     return json(await library.list(dataDir));
   }
 
-  async function watched(id: string, body: unknown) {
-    if (!validVideoId(id)) return json({ error: "Not found." }, 404);
-    const parsed = body as { token?: unknown };
-    const video =
-      typeof parsed?.token === "string" ? resolved.get(parsed.token) : null;
+  async function watched(id: string, body: WatchRequest) {
+    if (!validVideoId(id)) return notFound();
+    const video = resolved.get(body.token);
     if (!video || video.id !== id)
-      return json({ error: "Unknown playback session. Play again." }, 404);
+      return jsonError("Unknown playback session. Play again.", 404);
 
     library.watch(video.id, video);
-    return json({ ok: true });
+    return jsonOK();
   }
 
   async function serveMp4(
@@ -388,10 +386,10 @@ export function startServer({
     method: string,
     rangeHeader: string | null,
   ) {
-    if (!validVideoId(id)) return json({ error: "Not found." }, 404);
+    if (!validVideoId(id)) return notFound();
     const file = Bun.file(join(mediaRoot, id, "video.mp4"));
     if (!(await file.exists()) || file.size === 0)
-      return json({ error: "File missing. Download again." }, 404);
+      return jsonError("File missing. Download again.", 404);
     const size = file.size;
     const range = rangeHeader === null ? null : byteRange(rangeHeader, size);
     const headers = new Headers({
@@ -425,13 +423,12 @@ export function startServer({
       !validVideoId(id) ||
       (name !== "index.m3u8" && !/^\d+\.ts$/.test(name))
     ) {
-      return json({ error: "Not found." }, 404);
+      return notFound();
     }
     const dir = join(mediaRoot, id, "hls");
-    if (name === "index.m3u8" && !(await hlsComplete(dir)))
-      return json({ error: "Not found." }, 404);
+    if (name === "index.m3u8" && !(await hlsComplete(dir))) return notFound();
     const file = Bun.file(join(dir, name));
-    if (!(await file.exists())) return json({ error: "Not found." }, 404);
+    if (!(await file.exists())) return notFound();
     return new Response(file, {
       headers: {
         "Content-Type": name.endsWith(".m3u8")
@@ -444,9 +441,9 @@ export function startServer({
   }
 
   async function deleteHistory(id: string, filesOnly: boolean) {
-    if (!validVideoId(id)) return json({ error: "Not found." }, 404);
+    if (!validVideoId(id)) return notFound();
     if (preparing.has(id) || deleting.has(id))
-      return json({ error: "Video is busy. Retry later." }, 409);
+      return jsonError("Video is busy. Retry later.", 409);
     deleting.add(id);
     try {
       await rm(join(mediaRoot, id), { recursive: true, force: true });
@@ -457,7 +454,7 @@ export function startServer({
           if (video.kind === "proxy") proxies.delete(token);
         }
       }
-      return json({ ok: true });
+      return jsonOK();
     } finally {
       deleting.delete(id);
     }
@@ -469,17 +466,13 @@ export function startServer({
     resource: string,
   ) {
     if (range && (range.length > 64 || !/^bytes=\d*-\d*$/.test(range)))
-      return json({ error: "Invalid range." }, 416);
+      return jsonError("Invalid range.", 416);
     const proxy = proxies.get(token);
-    if (!proxy)
-      return json({ error: "Unknown HLS session. Press Play again." }, 404);
+    if (!proxy) return jsonError("Unknown HLS session. Press Play again.", 404);
     if (Date.now() - proxy.createdAt > sessionTtlMs) {
       proxies.delete(token);
-      return json(
-        {
-          error:
-            "This HLS session expired. Press Play again to re-extract the video.",
-        },
+      return jsonError(
+        "This HLS session expired. Press Play again to re-extract the video.",
         404,
       );
     }
@@ -495,11 +488,15 @@ export function startServer({
       // shell is unguarded, but every API route checks Host/Origin, which makes
       // rebinding the page harmless.
       "/": page,
-      "/healthz": { GET: json({ ok: true }) },
+      "/healthz": { GET: jsonOK() },
       "/api/resolve": {
         POST: mutationRoute(async (request) => {
           const body = await jsonBody(request);
-          return "response" in body ? body.response : resolveVideo(body.value);
+          if ("response" in body) return body.response;
+          const input = ResolveRequestSchema.safeParse(body.value);
+          return input.success
+            ? resolveVideo(input.data)
+            : jsonError("Invalid request.", 400);
         }),
       },
       "/api/history": { GET: readRoute(history) },
@@ -508,9 +505,11 @@ export function startServer({
       "/api/history/:id/watched": {
         POST: mutationRoute(async (request) => {
           const body = await jsonBody(request);
-          return "response" in body
-            ? body.response
-            : watched(request.params.id, body.value);
+          if ("response" in body) return body.response;
+          const input = WatchRequestSchema.safeParse(body.value);
+          return input.success
+            ? watched(request.params.id, input.data)
+            : jsonError("Invalid request.", 400);
         }),
       },
       "/api/history/:id/files": {
@@ -555,7 +554,7 @@ export function startServer({
       },
     },
     fetch() {
-      return json({ error: "Not found." }, 404);
+      return notFound();
     },
   });
   return server;
