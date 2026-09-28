@@ -210,11 +210,17 @@ export class VideoApp extends LitElement {
         ? { phase: "extracting", text: "Extracting YouTube HLS tracks…" }
         : {
             phase: "downloading",
-            text: "Checking saved files, downloading if needed, then packaging HLS…",
+            text:
+              this.mode === "mp4"
+                ? "Checking saved files, downloading MP4 if needed…"
+                : "Checking saved files, downloading if needed, then packaging HLS…",
           };
 
     try {
-      const request: ResolveRequest = { url, mode: kind };
+      const request: ResolveRequest = {
+        url,
+        mode: this.mode === "mp4" ? "mp4" : kind,
+      };
       const response = await fetch("/api/resolve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

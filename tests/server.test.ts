@@ -145,6 +145,103 @@ test("downloads a private MP4 file before returning a local stream link", async 
   ).toBe(400);
 });
 
+test("native MP4 saves only the MP4, then HLS mode packages the saved file", async () => {
+  let downloads = 0;
+  let packages = 0;
+  const base = await launch(
+    async (_url, path) => {
+      downloads++;
+      await writeFile(path, "abcdefghij");
+      return { title: "Fixture", channel: null, duration: 10 };
+    },
+    false,
+    false,
+    async (_mp4, dir) => {
+      packages++;
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        join(dir, "index.m3u8"),
+        "#EXTM3U\n#EXTINF:6.0,\n0000.ts\n#EXT-X-ENDLIST\n",
+      );
+      await writeFile(join(dir, "0000.ts"), "segment");
+    },
+  );
+  const mp4 = await (
+    await fetch(`${base}/api/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, mode: "mp4" }),
+    })
+  ).json();
+  expect(mp4.stream).toBe("/api/stream/abcdefghijk");
+  expect(mp4.hls).toBeUndefined();
+  expect(downloads).toBe(1);
+  expect(packages).toBe(0);
+  expect(
+    await Bun.file(
+      join(testDir, "data", "media", mp4.id, "hls", "index.m3u8"),
+    ).exists(),
+  ).toBe(false);
+  await watched(base, mp4.id, mp4.token);
+  expect((await history(base))[0].available).toEqual({ mp4: true, hls: false });
+
+  const hls = await (
+    await fetch(`${base}/api/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, mode: "download" }),
+    })
+  ).json();
+  expect(hls.hls).toBe("/api/hls/abcdefghijk/index.m3u8");
+  expect(downloads).toBe(1);
+  expect(packages).toBe(1);
+  expect((await history(base))[0].available).toEqual({ mp4: true, hls: true });
+});
+
+test("HLS preparation can join an in-flight native MP4 download", async () => {
+  let finish!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  let downloads = 0;
+  let packages = 0;
+  const base = await launch(
+    async (_url, path) => {
+      downloads++;
+      await gate;
+      await writeFile(path, "abcdefghij");
+      return { title: "Fixture", channel: null, duration: 10 };
+    },
+    false,
+    false,
+    async (_mp4, dir) => {
+      packages++;
+      await mkdir(dir, { recursive: true });
+      await writeFile(
+        join(dir, "index.m3u8"),
+        "#EXTM3U\n#EXTINF:6.0,\n0000.ts\n#EXT-X-ENDLIST\n",
+      );
+      await writeFile(join(dir, "0000.ts"), "segment");
+    },
+  );
+  const request = (mode: "mp4" | "download") =>
+    fetch(`${base}/api/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, mode }),
+    });
+  const mp4 = request("mp4");
+  await Bun.sleep(5);
+  const hls = request("download");
+  finish();
+  expect((await (await mp4).json()).stream).toBe("/api/stream/abcdefghijk");
+  expect((await (await hls).json()).hls).toBe(
+    "/api/hls/abcdefghijk/index.m3u8",
+  );
+  expect(downloads).toBe(1);
+  expect(packages).toBe(1);
+});
+
 test("allows localhost pages on port 3000 but rejects non-loopback hosts", async () => {
   const base = await launch();
   const response = await resolve(base, url, {
@@ -717,10 +814,10 @@ test("an incomplete HLS publish is rejected and can be rebuilt from the MP4", as
   expect(downloads).toBe(1);
 });
 
-test("handoff modes map to proxy/download HTTP requests without recording a watch", async () => {
+test("handoff modes map to their preparation requests without recording a watch", async () => {
   const base = await launch(undefined, true);
   const { parseHandoff, resolveKind } = await import("../app/client/handoff");
-  for (const mode of [null, "hls", "mp4"] as const) {
+  for (const mode of [null, "mp4", "hls"] as const) {
     const handoff = parseHandoff(
       `?url=${encodeURIComponent(url)}${mode ? `&mode=${mode}` : ""}`,
     );
@@ -731,12 +828,14 @@ test("handoff modes map to proxy/download HTTP requests without recording a watc
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         url: handoff.url,
-        mode: resolveKind(handoff.mode),
+        mode: handoff.mode === "mp4" ? "mp4" : resolveKind(handoff.mode),
       }),
     });
     expect(response.status).toBe(200);
     const result = await response.json();
-    expect(result.hls).toStartWith(mode === null ? "/api/proxy/" : "/api/hls/");
+    if (mode === null) expect(result.hls).toStartWith("/api/proxy/");
+    if (mode === "mp4") expect(result.hls).toBeUndefined();
+    if (mode === "hls") expect(result.hls).toStartWith("/api/hls/");
     expect(result.stream === undefined).toBe(mode === null);
   }
   expect(await history(base)).toEqual([]);

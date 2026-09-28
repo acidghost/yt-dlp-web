@@ -142,15 +142,14 @@ export function startServer({
   upstreamFetch?: UpstreamFetch;
 } = {}) {
   const proxies = new Map<string, ProxySession>();
-  const preparing = new Map<
-    string,
-    Promise<{
-      title: string;
-      duration: number | null;
-      channel: string | null;
-      hls: boolean;
-    }>
-  >();
+  type PreparedVideo = {
+    title: string;
+    duration: number | null;
+    channel: string | null;
+    hls: boolean;
+  };
+  type Preparation = { task: Promise<PreparedVideo>; includeHls: boolean };
+  const preparing = new Map<string, Preparation>();
   const resolved = new Map<string, ResolvedVideo>();
   // Registers a resolved video's watch token and returns it as JSON.
   const publish = (video: ResolvedVideo): Response => {
@@ -197,6 +196,27 @@ export function startServer({
   const deleting = new Set<string>();
   let activeDownloads = 0;
   let activeExtractions = 0;
+
+  function startPreparation(
+    id: string,
+    url: string,
+    includeHls: boolean,
+  ): Preparation | null {
+    if (activeDownloads >= 2) return null;
+    activeDownloads++;
+    const preparation: Preparation = {
+      task: prepareDownload(id, url, includeHls),
+      includeHls,
+    };
+    preparing.set(id, preparation);
+    void preparation.task
+      .finally(() => {
+        if (preparing.get(id) === preparation) preparing.delete(id);
+        activeDownloads--;
+      })
+      .catch(() => {}); // The waiting requests report the preparation error.
+    return preparation;
+  }
 
   // Allowed same-origin values: the configured ingress origin, or loopback names.
   const allowedOrigins = (): string[] =>
@@ -278,23 +298,22 @@ export function startServer({
       if (deleting.has(id))
         return jsonError("Video is being deleted. Retry later.", 409);
 
-      let task = preparing.get(id);
-      if (!task) {
-        if (activeDownloads >= 2)
+      const includeHls = body.mode !== "mp4";
+      let preparation =
+        preparing.get(id) ?? startPreparation(id, videoUrl, includeHls);
+      if (!preparation)
+        return jsonError("Two downloads are already in progress.", 429);
+
+      let video = await preparation.task;
+      // An HLS request may have joined an in-flight MP4-only download.
+      if (includeHls && !preparation.includeHls) {
+        preparation = preparing.get(id) ?? null;
+        if (!preparation?.includeHls)
+          preparation = startPreparation(id, videoUrl, true);
+        if (!preparation)
           return jsonError("Two downloads are already in progress.", 429);
-
-        activeDownloads++;
-        task = prepareDownload(id, videoUrl);
-        preparing.set(id, task);
-        void task
-          .finally(() => {
-            preparing.delete(id);
-            activeDownloads--;
-          })
-          .catch(() => {}); // The waiting requests report the preparation error.
+        video = await preparation.task;
       }
-
-      const video = await task;
 
       return publish({
         kind: "download",
@@ -317,7 +336,7 @@ export function startServer({
     }
   }
 
-  async function prepareDownload(id: string, url: string) {
+  async function prepareDownload(id: string, url: string, includeHls: boolean) {
     const dir = join(mediaRoot, id);
     const mp4 = join(dir, "video.mp4");
     const hlsDir = join(dir, "hls");
@@ -344,7 +363,7 @@ export function startServer({
 
       // Package HLS in staging; publish only a complete playlist.
       let hls = await hlsComplete(hlsDir);
-      if (!hls) {
+      if (includeHls && !hls) {
         try {
           const stagedHls = join(stage, "hls");
           await packageHls(mp4, stagedHls);

@@ -4,7 +4,7 @@ export type VideoId = string;
 
 export const ResolveRequestSchema = z.object({
   url: z.string(),
-  mode: z.enum(["proxy", "download"]).optional(),
+  mode: z.enum(["proxy", "download", "mp4"]).optional(),
 });
 export type ResolveRequest = z.infer<typeof ResolveRequestSchema>;
 

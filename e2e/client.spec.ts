@@ -41,7 +41,7 @@ test("a late history response cannot replace a newer refresh", async ({
     }
   });
   await page.route("**/api/resolve", async (route) => {
-    expect(route.request().postDataJSON()).toMatchObject({ mode: "download" });
+    expect(route.request().postDataJSON()).toMatchObject({ mode: "mp4" });
     await route.fulfill({ json: video });
   });
 
