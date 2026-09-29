@@ -19,8 +19,7 @@ const entry = (title: string) => ({
   channel: "Fixture channel",
   duration: 10,
   lastWatchedAt: "2026-09-27T10:00:00.000Z",
-  available: { mp4: true, hls: false },
-  sizeBytes: { mp4: 10, hls: null },
+  mp4: { sizeBytes: 10 },
 });
 
 test("a late history response cannot replace a newer refresh", async ({
@@ -98,19 +97,12 @@ test("a malformed successful response shows an error without attaching a source"
   await expect(page.locator("#title")).toHaveCount(0);
 });
 
-test("missing HLS keeps the downloaded MP4 available after a mode switch", async ({
-  page,
-}) => {
+test("download mode attaches the saved MP4", async ({ page }) => {
   await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/resolve", (route) => route.fulfill({ json: video }));
 
-  await page.goto(`/?url=${encodeURIComponent(url)}&mode=hls`);
+  await page.goto(`/?url=${encodeURIComponent(url)}&mode=mp4`);
   await expect(page.getByLabel("YouTube video URL")).toHaveValue(url);
-  await expect(page.locator("#status")).toHaveAttribute("data-phase", "error");
-  await expect(page.locator("#status")).toContainText(
-    "HLS packaging is unavailable",
-  );
-  await page.getByLabel("Playback mode").selectOption("mp4");
   await expect(page.locator("#status")).toHaveAttribute("data-phase", "ready");
   await expect(page.locator("video")).toHaveAttribute("src", video.stream);
 });

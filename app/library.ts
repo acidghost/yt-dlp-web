@@ -6,35 +6,6 @@ import type { HistoryEntry, VideoId } from "./protocol";
 export const validVideoId = (id: string): boolean =>
   /^[a-zA-Z0-9_-]{11}$/.test(id);
 
-// Total size of a complete VOD HLS package (manifest + segments), or null when
-// the manifest is missing, partial, or references a missing segment.
-export async function hlsSize(dir: string): Promise<number | null> {
-  const manifest = Bun.file(join(dir, "index.m3u8"));
-  if (!(await manifest.exists()) || manifest.size === 0) return null;
-
-  const text = await manifest.text();
-  if (!text.startsWith("#EXTM3U") || !text.includes("#EXT-X-ENDLIST"))
-    return null;
-
-  const segments = text
-    .split(/\r?\n/)
-    .filter((line) => line && !line.startsWith("#"));
-  if (segments.length === 0) return null;
-
-  let bytes = manifest.size;
-  for (const name of segments) {
-    if (!/^\d+\.ts$/.test(name)) return null;
-    const segment = Bun.file(join(dir, name));
-    if (!(await segment.exists()) || segment.size === 0) return null;
-    bytes += segment.size;
-  }
-  return bytes;
-}
-
-export async function hlsComplete(dir: string): Promise<boolean> {
-  return (await hlsSize(dir)) !== null;
-}
-
 type Row = {
   id: string;
   title: string;
@@ -173,14 +144,13 @@ export class Library {
     this.deleteRow.run(id);
   }
 
-  // Availability and sizes come from the files on disk, never from DB flags.
+  // MP4 size comes from the published file, never from a DB flag.
   async list(dataDir: string): Promise<HistoryEntry[]> {
     return Promise.all(
       this.listRows.all().map(async (row) => {
         const dir = join(dataDir, "media", row.id);
         const mp4 = Bun.file(join(dir, "video.mp4"));
         const mp4Bytes = (await mp4.exists()) && mp4.size > 0 ? mp4.size : null;
-        const hlsBytes = await hlsSize(join(dir, "hls"));
 
         return {
           id: row.id,
@@ -189,8 +159,7 @@ export class Library {
           channel: row.channel,
           duration: row.duration,
           lastWatchedAt: row.last_watched_at,
-          available: { mp4: mp4Bytes !== null, hls: hlsBytes !== null },
-          sizeBytes: { mp4: mp4Bytes, hls: hlsBytes },
+          mp4: { sizeBytes: mp4Bytes },
         } satisfies HistoryEntry;
       }),
     );

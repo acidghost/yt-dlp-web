@@ -9,15 +9,12 @@ server-side. It selects H.264/AAC variants up to 720p and prefers the original
 audio rendition. This mode only works when YouTube supplies a compatible HLS
 master with separate audio/video tracks.
 
-**Download + HLS.js** and **Download + Native MP4** are fallbacks: yt-dlp
-downloads/merges H.264/AAC into `DATA_DIR/media/<video-id>/video.mp4`, and
-ffmpeg packages `DATA_DIR/media/<video-id>/hls/index.m3u8` plus `.ts` segments
-without re-encoding. MP4 is playable even if HLS packaging fails; retrying a
-download will try packaging again without re-downloading the MP4. Changing modes
-prepares the selected source without autoplay. Switching between the two
-downloaded players reuses their files; switching to proxy extracts fresh signed
-URLs. Bun bundles the Lit light-DOM player, hls.js and missing.css locally from
-the imported `app/index.html` route and serves API/media via `Bun.serve` routes.
+**Download + Native MP4** is the fallback: yt-dlp downloads/merges H.264/AAC
+into `DATA_DIR/media/<video-id>/video.mp4`. Downloads are reused across plays.
+Changing modes prepares the selected source without autoplay; switching to proxy
+extracts fresh signed URLs. Bun bundles the Lit light-DOM player, hls.js and
+missing.css locally from the imported `app/index.html` route and serves API/media
+via `Bun.serve` routes.
 
 ## Run
 
@@ -44,23 +41,22 @@ just start  # build and launch dist/yt-dlp-web
 
 Open a bookmarked URL such as
 `http://127.0.0.1:3000/?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dabcdefghijk`
-to prepare proxy HLS without autoplay. Add `&mode=hls` or `&mode=mp4` to prepare
-a download instead. Replace the example ID with a real public video ID. An
+to prepare proxy HLS without autoplay. Add `&mode=mp4` to prepare a download
+instead. Replace the example ID with a real public video ID. An
 unknown mode is rejected without contacting the server.
 
 Watch history is saved in SQLite at `DATA_DIR/library.sqlite` (default
 `./data/library.sqlite`) when the video actually starts playing, not when a URL
 is resolved. History Play reuses the downloaded MP4 when available; otherwise it
 prepares a fresh proxy session. History shows the original YouTube link, channel
-(when yt-dlp supplies it), duration, watch time, and MP4/HLS file sizes. HLS
-size includes the playlist and its segments; sizes and availability reflect the
-files currently on disk, not cached database values. Older rows may show
-“Channel unavailable” until fresh metadata is extracted (for example, on a new
-proxy play) or the video is downloaded again. Downloads are staged under
-`DATA_DIR/media/<video-id>/` and reused across requests and restarts. Back up
-`DATA_DIR/library.sqlite` and `DATA_DIR/media/` together while the server is
-stopped (or use a consistent SQLite backup/snapshot); do not copy a live
-database file independently of its journal and media. **Delete files** removes
+(when yt-dlp supplies it), duration, watch time, and MP4 file sizes. Sizes and
+availability reflect the files currently on disk, not cached database values.
+Older rows may show “Channel unavailable” until fresh metadata is extracted
+(for example, on a new proxy play) or the video is downloaded again. Downloads
+are staged under `DATA_DIR/media/<video-id>/` and reused across requests and
+restarts. Back up `DATA_DIR/library.sqlite` and `DATA_DIR/media/` together while
+the server is stopped (or use a consistent SQLite backup/snapshot); do not copy
+a live database file independently of its journal and media. **Delete files** removes
 downloaded media but keeps watched history; **Delete files and history** removes
 both. The UI confirms either choice.
 
@@ -68,7 +64,7 @@ The proxy relays all watched bytes through Bun, so it uses local bandwidth even
 though it does not save files. YouTube signed URLs expire; press **Prepare
 video** again to re-extract when playback returns an expiry error. Proxy
 sessions expire on server restart; downloaded media links use stable video IDs.
-Old PoC `./tmp/<uuid>.mp4` and HLS files are neither imported nor deleted
+Old PoC `./tmp/<uuid>.mp4` files are neither imported nor deleted
 automatically. Review and remove them manually when no longer needed; `./tmp` is
 git-ignored.
 

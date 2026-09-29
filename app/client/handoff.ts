@@ -1,4 +1,4 @@
-export type PlayerMode = "proxy" | "hls" | "mp4";
+export type PlayerMode = "proxy" | "mp4";
 export type Handoff =
   | { url: string; mode: PlayerMode }
   | { error: string }
@@ -11,7 +11,7 @@ export function parseHandoff(search: string): Handoff {
       ? { error: "Add a video URL to the link." }
       : null;
   const mode = params.get("mode") ?? "proxy";
-  if (mode !== "proxy" && mode !== "hls" && mode !== "mp4")
+  if (mode !== "proxy" && mode !== "mp4")
     return { error: "Unknown playback mode." };
   const url = params.get("url") ?? "";
   try {
@@ -29,12 +29,4 @@ export function handoffSearch(url: string, mode: PlayerMode): string {
 
 export function resolveKind(mode: PlayerMode): "proxy" | "download" {
   return mode === "proxy" ? "proxy" : "download";
-}
-
-export function reuseSource(
-  kind: "proxy" | "download",
-  hls: boolean,
-  mode: PlayerMode,
-): boolean {
-  return kind === "download" && (mode === "mp4" || (mode === "hls" && hls));
 }

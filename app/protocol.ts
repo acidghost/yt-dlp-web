@@ -4,7 +4,7 @@ export type VideoId = string;
 
 export const ResolveRequestSchema = z.object({
   url: z.string(),
-  mode: z.enum(["proxy", "download", "mp4"]).optional(),
+  mode: z.enum(["proxy", "mp4"]).optional(),
 });
 export type ResolveRequest = z.infer<typeof ResolveRequestSchema>;
 
@@ -29,7 +29,6 @@ export const ResolvedVideoSchema = z.discriminatedUnion("kind", [
   VideoFields.extend({
     kind: z.literal("download"),
     stream: z.string(),
-    hls: z.string().optional(),
   }),
 ]);
 export type ResolvedVideo = z.infer<typeof ResolvedVideoSchema>;
@@ -41,11 +40,7 @@ export const HistoryEntrySchema = z.object({
   channel: z.string().nullable(),
   duration: z.number().nullable(),
   lastWatchedAt: z.string(),
-  available: z.object({ mp4: z.boolean(), hls: z.boolean() }),
-  sizeBytes: z.object({
-    mp4: z.number().nullable(),
-    hls: z.number().nullable(),
-  }),
+  mp4: z.object({ sizeBytes: z.number().nullable() }),
 });
 export const HistoryListSchema = z.array(HistoryEntrySchema);
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;

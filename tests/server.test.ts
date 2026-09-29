@@ -3,7 +3,6 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PackageHls } from "../app/hls";
 import { canonicalVideoUrl, type Download, InputError } from "../app/media";
 import { HistoryListSchema, ResolvedVideoSchema } from "../app/protocol";
 import { startServer } from "../app/server";
@@ -21,7 +20,6 @@ async function launch(
   download?: Download,
   proxy = false,
   reuse = false,
-  packaging?: PackageHls,
   opts: { publicOrigin?: string; sessionTtlMs?: number } = {},
 ) {
   if (!reuse) testDir = await mkdtemp(join(tmpdir(), "yt-dlp-web-test-"));
@@ -82,16 +80,6 @@ async function launch(
           },
         }
       : {}),
-    packageHls:
-      packaging ??
-      (async (_mp4, dir) => {
-        await mkdir(dir, { recursive: true });
-        await writeFile(
-          join(dir, "index.m3u8"),
-          "#EXTM3U\n#EXTINF:6.0,\n0000.ts\n#EXT-X-ENDLIST\n",
-        );
-        await writeFile(join(dir, "0000.ts"), "segment");
-      }),
     download:
       download ??
       (async (_url, path) => {
@@ -135,7 +123,6 @@ test("downloads a private MP4 file before returning a local stream link", async 
   if (data.kind !== "download") throw new Error("Expected a download");
   expect(data.title).toBe("Fixture");
   expect(data.stream).toBe("/api/stream/abcdefghijk");
-  expect(data.hls).toBe("/api/hls/abcdefghijk/index.m3u8");
   expect(JSON.stringify(data)).not.toContain(testDir);
   const file = Bun.file(join(testDir, "data", "media", data.id, "video.mp4"));
   expect(await file.text()).toBe("abcdefghij");
@@ -145,27 +132,13 @@ test("downloads a private MP4 file before returning a local stream link", async 
   ).toBe(400);
 });
 
-test("native MP4 saves only the MP4, then HLS mode packages the saved file", async () => {
+test("repeated native MP4 requests reuse the saved file", async () => {
   let downloads = 0;
-  let packages = 0;
-  const base = await launch(
-    async (_url, path) => {
-      downloads++;
-      await writeFile(path, "abcdefghij");
-      return { title: "Fixture", channel: null, duration: 10 };
-    },
-    false,
-    false,
-    async (_mp4, dir) => {
-      packages++;
-      await mkdir(dir, { recursive: true });
-      await writeFile(
-        join(dir, "index.m3u8"),
-        "#EXTM3U\n#EXTINF:6.0,\n0000.ts\n#EXT-X-ENDLIST\n",
-      );
-      await writeFile(join(dir, "0000.ts"), "segment");
-    },
-  );
+  const base = await launch(async (_url, path) => {
+    downloads++;
+    await writeFile(path, "abcdefghij");
+    return { title: "Fixture", channel: null, duration: 10 };
+  });
   const mp4 = await (
     await fetch(`${base}/api/resolve`, {
       method: "POST",
@@ -174,72 +147,47 @@ test("native MP4 saves only the MP4, then HLS mode packages the saved file", asy
     })
   ).json();
   expect(mp4.stream).toBe("/api/stream/abcdefghijk");
-  expect(mp4.hls).toBeUndefined();
   expect(downloads).toBe(1);
-  expect(packages).toBe(0);
-  expect(
-    await Bun.file(
-      join(testDir, "data", "media", mp4.id, "hls", "index.m3u8"),
-    ).exists(),
-  ).toBe(false);
   await watched(base, mp4.id, mp4.token);
-  expect((await history(base))[0].available).toEqual({ mp4: true, hls: false });
+  expect((await history(base))[0].mp4.sizeBytes).toBe(10);
 
-  const hls = await (
+  const replay = await (
     await fetch(`${base}/api/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, mode: "download" }),
+      body: JSON.stringify({ url, mode: "mp4" }),
     })
   ).json();
-  expect(hls.hls).toBe("/api/hls/abcdefghijk/index.m3u8");
+  expect(replay.stream).toBe(mp4.stream);
   expect(downloads).toBe(1);
-  expect(packages).toBe(1);
-  expect((await history(base))[0].available).toEqual({ mp4: true, hls: true });
+  expect((await history(base))[0].mp4.sizeBytes).toBe(10);
 });
 
-test("HLS preparation can join an in-flight native MP4 download", async () => {
+test("concurrent native MP4 requests share one download", async () => {
   let finish!: () => void;
   const gate = new Promise<void>((resolve) => {
     finish = resolve;
   });
   let downloads = 0;
-  let packages = 0;
-  const base = await launch(
-    async (_url, path) => {
-      downloads++;
-      await gate;
-      await writeFile(path, "abcdefghij");
-      return { title: "Fixture", channel: null, duration: 10 };
-    },
-    false,
-    false,
-    async (_mp4, dir) => {
-      packages++;
-      await mkdir(dir, { recursive: true });
-      await writeFile(
-        join(dir, "index.m3u8"),
-        "#EXTM3U\n#EXTINF:6.0,\n0000.ts\n#EXT-X-ENDLIST\n",
-      );
-      await writeFile(join(dir, "0000.ts"), "segment");
-    },
-  );
-  const request = (mode: "mp4" | "download") =>
+  const base = await launch(async (_url, path) => {
+    downloads++;
+    await gate;
+    await writeFile(path, "abcdefghij");
+    return { title: "Fixture", channel: null, duration: 10 };
+  });
+  const request = () =>
     fetch(`${base}/api/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, mode }),
+      body: JSON.stringify({ url, mode: "mp4" }),
     });
-  const mp4 = request("mp4");
+  const mp4 = request();
   await Bun.sleep(5);
-  const hls = request("download");
+  const replay = request();
   finish();
   expect((await (await mp4).json()).stream).toBe("/api/stream/abcdefghijk");
-  expect((await (await hls).json()).hls).toBe(
-    "/api/hls/abcdefghijk/index.m3u8",
-  );
+  expect((await (await replay).json()).stream).toBe("/api/stream/abcdefghijk");
   expect(downloads).toBe(1);
-  expect(packages).toBe(1);
 });
 
 test("allows localhost pages on port 3000 but rejects non-loopback hosts", async () => {
@@ -250,10 +198,10 @@ test("allows localhost pages on port 3000 but rejects non-loopback hosts", async
   });
   expect(response.status).toBe(200);
   const data = await response.json();
-  const playlist = await fetch(`${base}${data.hls}`, {
+  const media = await fetch(`${base}${data.stream}`, {
     headers: { Host: "localhost:3000", Origin: "http://localhost:3000" },
   });
-  expect(playlist.status).toBe(200);
+  expect(media.status).toBe(200);
   expect(
     (
       await resolve(base, url, {
@@ -310,22 +258,8 @@ test("proxies a nested HLS master, audio, map and ranged segments without downlo
   expect((await fetch(`${base}/api/proxy/unknown/0`)).status).toBe(404);
 });
 
-test("serves HLS playlists and segments without exposing other files", async () => {
+test("bundles the player and its assets", async () => {
   const base = await launch();
-  const data = await (await resolve(base)).json();
-  const playlist = await fetch(`${base}${data.hls}`);
-  expect(playlist.status).toBe(200);
-  expect(playlist.headers.get("content-type")).toContain("mpegurl");
-  expect(await playlist.text()).toContain("0000.ts");
-  const segment = await fetch(
-    `${base}${data.hls.replace("index.m3u8", "0000.ts")}`,
-  );
-  expect(segment.status).toBe(200);
-  expect(await segment.text()).toBe("segment");
-  expect(
-    (await fetch(`${base}${data.hls.replace("index.m3u8", "secret.txt")}`))
-      .status,
-  ).toBe(404);
   const html = await (await fetch(base)).text();
   expect(html).toContain('type="module"');
   const script = html.match(/<script[^>]+src="([^"]+\.js)"/);
@@ -337,7 +271,6 @@ test("serves HLS playlists and segments without exposing other files", async () 
   const client = await bundled.text();
   expect(client).toContain("Hls");
   expect(client).toContain("Proxy YouTube HLS");
-  expect(client).toContain("Download + HLS.js");
   expect(client).toContain("Download + Native MP4");
   expect(client).toContain("Delete files and history");
   expect(client).toContain("Delete files");
@@ -486,8 +419,7 @@ test("history is written only for a successfully resolved, playing proxy; surviv
     title: "Proxy fixture",
     channel: "Proxy channel",
     duration: 30,
-    available: { mp4: false, hls: false },
-    sizeBytes: { mp4: null, hls: null },
+    mp4: { sizeBytes: null },
   });
   expect(Number.isNaN(Date.parse(firstRow.lastWatchedAt))).toBe(false);
   server?.stop(true);
@@ -505,6 +437,7 @@ test("history is written only for a successfully resolved, playing proxy; surviv
 test("download history checks files, validates watch token and ID, and preserves metadata across restart", async () => {
   const base = await launch();
   const resolved = await (await resolve(base)).json();
+  const mediaDir = join(testDir, "data", "media", resolved.id);
   expect(await history(base)).toEqual([]);
   expect((await watched(base, "invalid/../", resolved.token)).status).toBe(404);
   expect((await watched(base, "short", resolved.token)).status).toBe(404);
@@ -526,40 +459,24 @@ test("download history checks files, validates watch token and ID, and preserves
     title: "Fixture",
     channel: "Fixture channel",
     duration: 10,
-    available: { mp4: true, hls: true },
+    mp4: { sizeBytes: 10 },
   });
-  const mediaDir = join(testDir, "data", "media", resolved.id);
-  const expectedHlsBytes =
-    Bun.file(join(mediaDir, "hls", "index.m3u8")).size +
-    Bun.file(join(mediaDir, "hls", "0000.ts")).size;
-  expect(rows[0].sizeBytes).toEqual({ mp4: 10, hls: expectedHlsBytes });
   server?.stop(true);
   const restarted = await launch(undefined, false, true);
   expect(await history(restarted)).toEqual(rows);
   await writeFile(join(mediaDir, "video.mp4"), "abc");
-  expect((await history(restarted))[0].sizeBytes.mp4).toBe(3);
+  expect((await history(restarted))[0].mp4.sizeBytes).toBe(3);
   await rm(join(mediaDir, "video.mp4"));
-  expect((await history(restarted))[0]).toMatchObject({
-    available: { mp4: false, hls: true },
-    sizeBytes: { mp4: null, hls: expectedHlsBytes },
-  });
-  await rm(join(testDir, "data", "media", resolved.id, "hls"), {
-    recursive: true,
-  });
   expect((await history(restarted))[0]).toMatchObject({
     id: "abcdefghijk",
     title: "Fixture",
-    available: { mp4: false, hls: false },
-    sizeBytes: { mp4: null, hls: null },
+    mp4: { sizeBytes: null },
   });
   expect((await watched(restarted, "abcdefghijk", resolved.token)).status).toBe(
     404,
   );
   expect((await resolve(restarted)).status).toBe(200);
-  expect((await history(restarted))[0].available).toEqual({
-    mp4: true,
-    hls: true,
-  });
+  expect((await history(restarted))[0].mp4.sizeBytes).toBe(10);
 });
 
 test("repeated plays update a single row, newest first; proxy replay retains downloaded-file badges", async () => {
@@ -590,7 +507,7 @@ test("repeated plays update a single row, newest first; proxy replay retains dow
   ]);
   expect(rows[0]).toMatchObject({
     title: "Proxy fixture",
-    available: { mp4: true, hls: true },
+    mp4: { sizeBytes: 10 },
   });
   expect(
     (await watched(base, first.id, proxy.token, { url: otherUrl })).status,
@@ -640,41 +557,6 @@ test("downloads reuse stable media across requests and restart; ranges and HEAD 
   expect(await range.text()).toBe("bc");
   const head = await fetch(`${restarted}${replay.stream}`, { method: "HEAD" });
   expect(head.headers.get("content-length")).toBe("10");
-});
-
-test("failed HLS packaging keeps the MP4 playable and recovers without downloading again", async () => {
-  let downloads = 0;
-  const download: Download = async (_url, path) => {
-    downloads++;
-    await writeFile(path, "abcdefghij");
-    return { title: "MP4 fixture", duration: 10, channel: null };
-  };
-  const base = await launch(download, false, false, async (_mp4, dir) => {
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, "index.m3u8"), "partial");
-    throw new Error("ffmpeg failed");
-  });
-  const first = await (await resolve(base)).json();
-  expect(first.stream).toBe("/api/stream/abcdefghijk");
-  expect(first.hls).toBeUndefined();
-  expect(await (await fetch(`${base}${first.stream}`)).text()).toBe(
-    "abcdefghij",
-  );
-  expect((await watched(base, first.id, first.token)).status).toBe(200);
-  expect((await history(base))[0].available).toEqual({ mp4: true, hls: false });
-  expect(
-    await Bun.file(
-      join(testDir, "data", "media", first.id, "hls", "index.m3u8"),
-    ).exists(),
-  ).toBe(false);
-  const files = await readdir(join(testDir, "data", "media", first.id));
-  expect(files.some((name) => name.startsWith(".staging-"))).toBe(false);
-  server?.stop(true);
-  const restarted = await launch(download, false, true);
-  const recovered = await (await resolve(restarted)).json();
-  expect(downloads).toBe(1);
-  expect(recovered.hls).toBe("/api/hls/abcdefghijk/index.m3u8");
-  expect((await fetch(`${restarted}${recovered.hls}`)).status).toBe(200);
 });
 
 test("failed downloads remove staging, and startup clears abandoned staging without touching legacy tmp", async () => {
@@ -735,8 +617,7 @@ test("duplicate prepares share one download and both deletes are idempotent", as
   ).toBe(403);
   expect((await removeHistory(base, a.id, true)).status).toBe(200);
   expect((await history(base))[0]).toMatchObject({
-    available: { mp4: false, hls: false },
-    sizeBytes: { mp4: null, hls: null },
+    mp4: { sizeBytes: null },
   });
   expect((await fetch(`${base}${a.stream}`)).status).toBe(404);
   expect((await removeHistory(base, a.id, true)).status).toBe(200);
@@ -776,8 +657,7 @@ test("migrates watched rows from the UUID history schema without adopting or del
   expect((await history(base))[0]).toMatchObject({
     title: "Older video",
     channel: null,
-    available: { mp4: false, hls: false },
-    sizeBytes: { mp4: null, hls: null },
+    mp4: { sizeBytes: null },
   });
   expect(await Bun.file(legacyFile).text()).toBe("do not touch");
   const resolved = await (await resolve(base)).json();
@@ -785,39 +665,10 @@ test("migrates watched rows from the UUID history schema without adopting or del
   expect(await history(base)).toHaveLength(1);
 });
 
-test("an incomplete HLS publish is rejected and can be rebuilt from the MP4", async () => {
-  let downloads = 0;
-  const download: Download = async (_url, path) => {
-    downloads++;
-    await writeFile(path, "abcdefghij");
-    return { title: "Fixture", duration: 10, channel: null };
-  };
-  const base = await launch(download, false, false, async (_mp4, dir) => {
-    await mkdir(dir, { recursive: true });
-    await writeFile(
-      join(dir, "index.m3u8"),
-      "#EXTM3U\n#EXTINF:6,\n0000.ts\n#EXT-X-ENDLIST",
-    );
-  });
-  const first = await (await resolve(base)).json();
-  expect(first.hls).toBeUndefined();
-  expect(
-    await Bun.file(
-      join(testDir, "data", "media", first.id, "hls", "index.m3u8"),
-    ).exists(),
-  ).toBe(false);
-  server?.stop(true);
-  const restarted = await launch(download, false, true);
-  expect((await (await resolve(restarted)).json()).hls).toBe(
-    "/api/hls/abcdefghijk/index.m3u8",
-  );
-  expect(downloads).toBe(1);
-});
-
 test("handoff modes map to their preparation requests without recording a watch", async () => {
   const base = await launch(undefined, true);
   const { parseHandoff, resolveKind } = await import("../app/client/handoff");
-  for (const mode of [null, "mp4", "hls"] as const) {
+  for (const mode of [null, "mp4"] as const) {
     const handoff = parseHandoff(
       `?url=${encodeURIComponent(url)}${mode ? `&mode=${mode}` : ""}`,
     );
@@ -834,8 +685,6 @@ test("handoff modes map to their preparation requests without recording a watch"
     expect(response.status).toBe(200);
     const result = await response.json();
     if (mode === null) expect(result.hls).toStartWith("/api/proxy/");
-    if (mode === "mp4") expect(result.hls).toBeUndefined();
-    if (mode === "hls") expect(result.hls).toStartWith("/api/hls/");
     expect(result.stream === undefined).toBe(mode === null);
   }
   expect(await history(base)).toEqual([]);
@@ -875,8 +724,7 @@ test("migrates existing v2 watched history and fills in the channel on a later p
     title: "Older title",
     channel: null,
     duration: 45,
-    available: { mp4: false, hls: false },
-    sizeBytes: { mp4: null, hls: null },
+    mp4: { sizeBytes: null },
   });
   const proxy = await (
     await fetch(`${base}/api/resolve`, {
@@ -890,20 +738,6 @@ test("migrates existing v2 watched history and fills in the channel on a later p
   server?.stop(true);
   const restarted = await launch(undefined, true, true);
   expect((await history(restarted))[0].channel).toBe("Proxy channel");
-});
-
-test("HLS size and badge disappear when a segment is missing, then recover from the saved MP4", async () => {
-  const base = await launch();
-  const resolved = await (await resolve(base)).json();
-  expect((await watched(base, resolved.id, resolved.token)).status).toBe(200);
-  const segment = join(testDir, "data", "media", resolved.id, "hls", "0000.ts");
-  await rm(segment);
-  expect((await history(base))[0]).toMatchObject({
-    available: { mp4: true, hls: false },
-    sizeBytes: { mp4: 10, hls: null },
-  });
-  expect((await resolve(base)).status).toBe(200);
-  expect((await history(base))[0].sizeBytes.hls).toBeGreaterThan(0);
 });
 
 const proxyResolve = (base: string) =>
@@ -926,7 +760,7 @@ test("healthz answers probes from any Host and never emits CORS headers", async 
 });
 
 test("PUBLIC_ORIGIN admits only its host for reads and mutations", async () => {
-  const base = await launch(undefined, true, false, undefined, {
+  const base = await launch(undefined, true, false, {
     publicOrigin: "https://player.example.com",
   });
   const ingress = {
@@ -1030,7 +864,7 @@ test("no-Origin browser attempts and cross-site fetch metadata on mutations are 
 });
 
 test("proxy sessions expire with an actionable message and evict to free capacity", async () => {
-  const base = await launch(undefined, true, false, undefined, {
+  const base = await launch(undefined, true, false, {
     sessionTtlMs: 1200,
   });
   const first = await (await proxyResolve(base)).json();

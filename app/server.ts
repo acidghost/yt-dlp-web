@@ -2,12 +2,12 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import { mkdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { BunRequest } from "bun";
-import { packageHls as createHls, type PackageHls } from "./hls";
 import page from "./index.html";
-import { hlsComplete, Library, validVideoId } from "./library";
+import { Library, validVideoId } from "./library";
 import {
   canonicalVideoUrl,
   type Download,
+  type DownloadedVideo,
   downloadVideo,
   type ExtractHls,
   extractHls as extractYouTubeHls,
@@ -127,7 +127,6 @@ export function startServer({
   dataDir = process.env.DATA_DIR ?? "./data",
   sessionTtlMs = 6 * 60 * 60 * 1000,
   download = downloadVideo,
-  packageHls = createHls,
   extractHls = extractYouTubeHls,
   upstreamFetch = fetch,
 }: {
@@ -137,19 +136,11 @@ export function startServer({
   dataDir?: string;
   sessionTtlMs?: number;
   download?: Download;
-  packageHls?: PackageHls;
   extractHls?: ExtractHls;
   upstreamFetch?: UpstreamFetch;
 } = {}) {
   const proxies = new Map<string, ProxySession>();
-  type PreparedVideo = {
-    title: string;
-    duration: number | null;
-    channel: string | null;
-    hls: boolean;
-  };
-  type Preparation = { task: Promise<PreparedVideo>; includeHls: boolean };
-  const preparing = new Map<string, Preparation>();
+  const preparing = new Map<string, Promise<DownloadedVideo>>();
   const resolved = new Map<string, ResolvedVideo>();
   // Registers a resolved video's watch token and returns it as JSON.
   const publish = (video: ResolvedVideo): Response => {
@@ -197,19 +188,12 @@ export function startServer({
   let activeDownloads = 0;
   let activeExtractions = 0;
 
-  function startPreparation(
-    id: string,
-    url: string,
-    includeHls: boolean,
-  ): Preparation | null {
+  function startPreparation(id: string, url: string) {
     if (activeDownloads >= 2) return null;
     activeDownloads++;
-    const preparation: Preparation = {
-      task: prepareDownload(id, url, includeHls),
-      includeHls,
-    };
+    const preparation = prepareDownload(id, url);
     preparing.set(id, preparation);
-    void preparation.task
+    void preparation
       .finally(() => {
         if (preparing.get(id) === preparation) preparing.delete(id);
         activeDownloads--;
@@ -298,22 +282,11 @@ export function startServer({
       if (deleting.has(id))
         return jsonError("Video is being deleted. Retry later.", 409);
 
-      const includeHls = body.mode !== "mp4";
-      let preparation =
-        preparing.get(id) ?? startPreparation(id, videoUrl, includeHls);
+      const preparation = preparing.get(id) ?? startPreparation(id, videoUrl);
       if (!preparation)
         return jsonError("Two downloads are already in progress.", 429);
 
-      let video = await preparation.task;
-      // An HLS request may have joined an in-flight MP4-only download.
-      if (includeHls && !preparation.includeHls) {
-        preparation = preparing.get(id) ?? null;
-        if (!preparation?.includeHls)
-          preparation = startPreparation(id, videoUrl, true);
-        if (!preparation)
-          return jsonError("Two downloads are already in progress.", 429);
-        video = await preparation.task;
-      }
+      const video = await preparation;
 
       return publish({
         kind: "download",
@@ -324,7 +297,6 @@ export function startServer({
         channel: video.channel,
         duration: video.duration,
         stream: `/api/stream/${id}`,
-        ...(video.hls ? { hls: `/api/hls/${id}/index.m3u8` } : {}),
       });
     } catch (error) {
       return jsonError(
@@ -336,10 +308,9 @@ export function startServer({
     }
   }
 
-  async function prepareDownload(id: string, url: string, includeHls: boolean) {
+  async function prepareDownload(id: string, url: string) {
     const dir = join(mediaRoot, id);
     const mp4 = join(dir, "video.mp4");
-    const hlsDir = join(dir, "hls");
     const stage = join(dir, `.staging-${crypto.randomUUID()}`);
     await mkdir(stage, { recursive: true });
     try {
@@ -361,26 +332,7 @@ export function startServer({
       if (!video)
         video = { title: "Untitled video", duration: null, channel: null };
 
-      // Package HLS in staging; publish only a complete playlist.
-      let hls = await hlsComplete(hlsDir);
-      if (includeHls && !hls) {
-        try {
-          const stagedHls = join(stage, "hls");
-          await packageHls(mp4, stagedHls);
-          if (!(await hlsComplete(stagedHls)))
-            throw new InputError(
-              "ffmpeg did not create a complete HLS playlist.",
-            );
-
-          await rm(hlsDir, { recursive: true, force: true });
-          await rename(stagedHls, hlsDir);
-          hls = true;
-        } catch {
-          // A failed HLS package must not make the published MP4 unplayable.
-        }
-      }
-
-      return { ...video, hls };
+      return video;
     } finally {
       await rm(stage, { recursive: true, force: true });
     }
@@ -435,28 +387,6 @@ export function startServer({
     }
     headers.set("Content-Length", String(size));
     return new Response(method === "HEAD" ? null : file, { headers });
-  }
-
-  async function serveHls(id: string, name: string) {
-    if (
-      !validVideoId(id) ||
-      (name !== "index.m3u8" && !/^\d+\.ts$/.test(name))
-    ) {
-      return notFound();
-    }
-    const dir = join(mediaRoot, id, "hls");
-    if (name === "index.m3u8" && !(await hlsComplete(dir))) return notFound();
-    const file = Bun.file(join(dir, name));
-    if (!(await file.exists())) return notFound();
-    return new Response(file, {
-      headers: {
-        "Content-Type": name.endsWith(".m3u8")
-          ? "application/vnd.apple.mpegurl"
-          : "video/mp2t",
-        "Cache-Control": "no-store",
-        "X-Content-Type-Options": "nosniff",
-      },
-    });
   }
 
   async function deleteHistory(id: string, filesOnly: boolean) {
@@ -555,11 +485,6 @@ export function startServer({
             request.method,
             request.headers.get("range"),
           ),
-        ),
-      },
-      "/api/hls/:id/:file": {
-        GET: readRoute((request) =>
-          serveHls(request.params.id, request.params.file),
         ),
       },
       "/api/proxy/:token/:resource": {

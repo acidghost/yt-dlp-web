@@ -16,7 +16,6 @@ import {
   type PlayerMode,
   parseHandoff,
   resolveKind,
-  reuseSource,
 } from "./handoff";
 
 type Phase = "idle" | "extracting" | "downloading" | "ready" | "error";
@@ -143,15 +142,9 @@ export class VideoApp extends LitElement {
   private attachSource(): boolean {
     const source = this.source;
     if (!source) return false;
-    if (this.mode === "mp4" && source.kind === "download") {
+    if (source.kind === "download") {
       this.player.src = source.stream;
       return true;
-    }
-    if (!source.hls) {
-      this.fail(
-        "HLS packaging is unavailable. Switch to Native MP4 to play the saved video.",
-      );
-      return false;
     }
     if (Hls.isSupported()) {
       const hls = new Hls();
@@ -210,16 +203,13 @@ export class VideoApp extends LitElement {
         ? { phase: "extracting", text: "Extracting YouTube HLS tracks…" }
         : {
             phase: "downloading",
-            text:
-              this.mode === "mp4"
-                ? "Checking saved files, downloading MP4 if needed…"
-                : "Checking saved files, downloading if needed, then packaging HLS…",
+            text: "Checking saved files, downloading MP4 if needed…",
           };
 
     try {
       const request: ResolveRequest = {
         url,
-        mode: this.mode === "mp4" ? "mp4" : kind,
+        mode: this.mode,
       };
       const response = await fetch("/api/resolve", {
         method: "POST",
@@ -257,7 +247,7 @@ export class VideoApp extends LitElement {
 
   private changeMode(event: Event): void {
     const value = (event.currentTarget as HTMLSelectElement).value;
-    if (value !== "proxy" && value !== "hls" && value !== "mp4") return;
+    if (value !== "proxy" && value !== "mp4") return;
     this.mode = value;
     this.updateAddress();
     if (this.busy) return;
@@ -270,21 +260,20 @@ export class VideoApp extends LitElement {
       return;
     }
 
-    if (reuseSource(this.source.kind, Boolean(this.source.hls), value)) {
+    if (this.source.kind === "download" && value === "mp4") {
       this.resetPlayer();
       this.attachReady();
       return;
     }
 
-    // A proxy switch always extracts new signed URLs. Download mode changes
-    // re-use files on disk (and can retry HLS packaging without redownloading).
+    // A proxy switch extracts fresh signed URLs; a download reuses the saved MP4.
     void this.prepare(false);
   }
 
   private replay(entry: HistoryEntry): void {
     if (this.busy) return;
     this.url = entry.url;
-    this.mode = entry.available.mp4 ? "mp4" : "proxy";
+    this.mode = entry.mp4.sizeBytes !== null ? "mp4" : "proxy";
     this.focusPlayer();
     void this.prepare();
   }
@@ -448,7 +437,6 @@ export class VideoApp extends LitElement {
             <select id="player-mode" .value=${this.mode} @change=${this.changeMode}
               ?disabled=${this.busy}>
               <option value="proxy">Proxy YouTube HLS (starts sooner)</option>
-              <option value="hls">Download + HLS.js</option>
               <option value="mp4">Download + Native MP4</option>
             </select>
             <strong>
@@ -466,10 +454,8 @@ export class VideoApp extends LitElement {
           this.notice.phase === "error"
             ? html`<p class="hint">${
                 this.mode === "proxy"
-                  ? "Retry preparation or choose a download mode."
-                  : this.mode === "hls"
-                    ? "Try Native MP4; the downloaded video may still be available."
-                    : "Retry preparation or try Proxy YouTube HLS."
+                  ? "Retry preparation or choose Download + Native MP4."
+                  : "Retry preparation or try Proxy YouTube HLS."
               }</p>`
             : ""
         }
@@ -511,6 +497,7 @@ export class VideoApp extends LitElement {
   }
 
   private renderHistoryEntry(entry: HistoryEntry) {
+    const mp4Available = entry.mp4.sizeBytes !== null;
     return html`
       <li class="history-item border-block-start" data-id=${entry.id}>
         <div class="history-details">
@@ -520,9 +507,7 @@ export class VideoApp extends LitElement {
           <a class="original-link" href=${entry.url} target="_blank" rel="noopener noreferrer"
             aria-label=${`Open ${entry.title} on YouTube`}>Open on YouTube ↗</a>
           <span class="badges" aria-label="Downloaded files">
-            ${entry.available.mp4 ? html`<chip class="archive">MP4 · ${fileSize(entry.sizeBytes.mp4)}</chip>` : ""}
-            ${entry.available.hls ? html`<chip class="archive">HLS · ${fileSize(entry.sizeBytes.hls)}</chip>` : ""}
-            ${!entry.available.mp4 && !entry.available.hls ? html`<chip class="plain">No files</chip>` : ""}
+            ${mp4Available ? html`<chip class="archive">MP4 · ${fileSize(entry.mp4.sizeBytes)}</chip>` : html`<chip class="plain">No files</chip>`}
           </span>
         </div>
         <div class="history-actions tool-bar">
@@ -532,7 +517,7 @@ export class VideoApp extends LitElement {
             <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#play-icon"></use></svg>
           </button>
           ${
-            entry.available.mp4 || entry.available.hls
+            mp4Available
               ? html`
             <button class="warn iconbutton <big>" type="button"
               aria-label=${`Delete downloaded files for ${entry.title}`} title="Delete files"
