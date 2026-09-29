@@ -17,6 +17,8 @@ import {
   type ApiError,
   type ApiResponse,
   type OkResponse,
+  type ProgressRequest,
+  ProgressRequestSchema,
   type ResolvedVideo,
   type ResolveRequest,
   ResolveRequestSchema,
@@ -272,6 +274,7 @@ export function startServer({
             title: source.title,
             channel: source.channel,
             duration: source.duration,
+            positionSeconds: library.position(id),
             hls: `/api/proxy/${token}/0`,
           });
         } finally {
@@ -296,6 +299,7 @@ export function startServer({
         title: video.title,
         channel: video.channel,
         duration: video.duration,
+        positionSeconds: library.position(id),
         stream: `/api/stream/${id}`,
       });
     } catch (error) {
@@ -349,6 +353,20 @@ export function startServer({
       return jsonError("Unknown playback session. Play again.", 404);
 
     library.watch(video.id, video);
+    return jsonOK();
+  }
+
+  async function progress(id: string, body: ProgressRequest) {
+    if (!validVideoId(id)) return notFound();
+    const video = resolved.get(body.token);
+    if (!video || video.id !== id)
+      return jsonError("Unknown playback session. Play again.", 404);
+
+    const nearEnd =
+      video.duration !== null &&
+      body.positionSeconds >=
+        video.duration - Math.min(15, video.duration * 0.05);
+    library.progress(id, nearEnd ? 0 : Math.floor(body.positionSeconds));
     return jsonOK();
   }
 
@@ -458,6 +476,16 @@ export function startServer({
           const input = WatchRequestSchema.safeParse(body.value);
           return input.success
             ? watched(request.params.id, input.data)
+            : jsonError("Invalid request.", 400);
+        }),
+      },
+      "/api/history/:id/progress": {
+        POST: mutationRoute(async (request) => {
+          const body = await jsonBody(request);
+          if ("response" in body) return body.response;
+          const input = ProgressRequestSchema.safeParse(body.value);
+          return input.success
+            ? progress(request.params.id, input.data)
             : jsonError("Invalid request.", 400);
         }),
       },

@@ -12,6 +12,7 @@ type Row = {
   duration: number | null;
   channel: string | null;
   last_watched_at: string;
+  position_seconds: number;
 };
 
 // Server-validated video metadata, shared by remember/watch upserts.
@@ -35,6 +36,8 @@ export class Library {
     [string, string, number | null, string | null, string]
   >;
   private deleteRow!: Statement<unknown, [string]>;
+  private findPosition!: Statement<{ position_seconds: number }, [string]>;
+  private savePosition!: Statement<unknown, [number, string]>;
 
   constructor(dataDir: string) {
     mkdirSync(dataDir, { recursive: true });
@@ -55,9 +58,10 @@ export class Library {
         title TEXT NOT NULL,
         duration REAL,
         last_watched_at TEXT,
-        channel TEXT
+        channel TEXT,
+        position_seconds REAL NOT NULL DEFAULT 0
       );
-      PRAGMA user_version = 3;`);
+      PRAGMA user_version = 4;`);
       return;
     }
 
@@ -67,13 +71,14 @@ export class Library {
       this.db.transaction(() => {
         this.db.run(`CREATE TABLE videos_new (
           id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, duration REAL,
-          last_watched_at TEXT, channel TEXT
+          last_watched_at TEXT, channel TEXT,
+          position_seconds REAL NOT NULL DEFAULT 0
         );
         INSERT INTO videos_new (id, title, duration, last_watched_at)
           SELECT id, title, duration, last_watched_at FROM videos;
         DROP TABLE videos;
         ALTER TABLE videos_new RENAME TO videos;
-        PRAGMA user_version = 3;`);
+        PRAGMA user_version = 4;`);
       })();
       return;
     }
@@ -81,19 +86,26 @@ export class Library {
     if (version === 2) {
       this.db.transaction(() => {
         this.db.run(
-          "ALTER TABLE videos ADD COLUMN channel TEXT; PRAGMA user_version = 3;",
+          "ALTER TABLE videos ADD COLUMN channel TEXT; ALTER TABLE videos ADD COLUMN position_seconds REAL NOT NULL DEFAULT 0; PRAGMA user_version = 4;",
         );
       })();
       return;
     }
 
-    if (version !== 3)
+    if (version === 3) {
+      this.db.run(
+        "ALTER TABLE videos ADD COLUMN position_seconds REAL NOT NULL DEFAULT 0; PRAGMA user_version = 4;",
+      );
+      return;
+    }
+
+    if (version !== 4)
       throw new Error(`Unsupported library schema version: ${version}`);
   }
 
   private prepareStatements(): void {
     this.listRows = this.db.query<Row, []>(
-      "SELECT id, title, duration, channel, last_watched_at FROM videos " +
+      "SELECT id, title, duration, channel, last_watched_at, position_seconds FROM videos " +
         "WHERE last_watched_at IS NOT NULL ORDER BY last_watched_at DESC, id",
     );
     this.find = this.db.query<Metadata, [string]>(
@@ -118,6 +130,12 @@ export class Library {
     );
     this.deleteRow = this.db.query<unknown, [string]>(
       "DELETE FROM videos WHERE id = ?1",
+    );
+    this.findPosition = this.db.query<{ position_seconds: number }, [string]>(
+      "SELECT position_seconds FROM videos WHERE id = ?1",
+    );
+    this.savePosition = this.db.query<unknown, [number, string]>(
+      "UPDATE videos SET position_seconds = ?1 WHERE id = ?2 AND last_watched_at IS NOT NULL",
     );
   }
 
@@ -144,6 +162,14 @@ export class Library {
     this.deleteRow.run(id);
   }
 
+  position(id: VideoId): number {
+    return this.findPosition.get(id)?.position_seconds ?? 0;
+  }
+
+  progress(id: VideoId, positionSeconds: number): void {
+    this.savePosition.run(positionSeconds, id);
+  }
+
   // MP4 size comes from the published file, never from a DB flag.
   async list(dataDir: string): Promise<HistoryEntry[]> {
     return Promise.all(
@@ -159,6 +185,7 @@ export class Library {
           channel: row.channel,
           duration: row.duration,
           lastWatchedAt: row.last_watched_at,
+          positionSeconds: row.position_seconds,
           mp4: { sizeBytes: mp4Bytes },
         } satisfies HistoryEntry;
       }),

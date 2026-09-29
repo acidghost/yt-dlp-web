@@ -388,6 +388,48 @@ const watched = (base: string, id: string, token: string, extra = {}) =>
     body: JSON.stringify({ token, ...extra }),
   });
 
+const progress = (
+  base: string,
+  id: string,
+  token: string,
+  positionSeconds: unknown,
+) =>
+  fetch(`${base}/api/history/${id}/progress`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, positionSeconds }),
+  });
+
+test("saves playback position for both modes and clears it near the end", async () => {
+  const base = await launch(undefined, true);
+  const proxy = await (await proxyResolve(base)).json();
+  expect(proxy.positionSeconds).toBe(0);
+  expect((await progress(base, proxy.id, proxy.token, 12)).status).toBe(200);
+  expect(await history(base)).toEqual([]);
+  expect((await watched(base, proxy.id, proxy.token)).status).toBe(200);
+  expect((await progress(base, proxy.id, "wrong-token", 12)).status).toBe(404);
+  expect((await progress(base, "aaaaaaaaaaa", proxy.token, 12)).status).toBe(
+    404,
+  );
+  expect((await progress(base, proxy.id, proxy.token, -1)).status).toBe(400);
+  expect((await progress(base, proxy.id, proxy.token, "12")).status).toBe(400);
+  expect((await progress(base, proxy.id, proxy.token, 12.8)).status).toBe(200);
+  expect((await history(base))[0].positionSeconds).toBe(12);
+  expect((await watched(base, proxy.id, proxy.token)).status).toBe(200);
+  expect((await history(base))[0].positionSeconds).toBe(12);
+
+  server?.stop(true);
+  const restarted = await launch(undefined, true, true);
+  const freshProxy = await (await proxyResolve(restarted)).json();
+  expect(freshProxy.positionSeconds).toBe(12);
+  const mp4 = await (await resolve(restarted)).json();
+  expect(mp4.positionSeconds).toBe(12);
+  expect(
+    (await progress(restarted, freshProxy.id, freshProxy.token, 29)).status,
+  ).toBe(200);
+  expect((await history(restarted))[0].positionSeconds).toBe(0);
+});
+
 test("history is written only for a successfully resolved, playing proxy; survives restart and replays", async () => {
   const base = await launch(undefined, true);
   expect(await history(base)).toEqual([]);
@@ -738,6 +780,33 @@ test("migrates existing v2 watched history and fills in the channel on a later p
   server?.stop(true);
   const restarted = await launch(undefined, true, true);
   expect((await history(restarted))[0].channel).toBe("Proxy channel");
+});
+
+test("migrates v3 watched history with an empty resume position", async () => {
+  testDir = await mkdtemp(join(tmpdir(), "yt-dlp-web-test-"));
+  const dataDir = join(testDir, "data");
+  await mkdir(dataDir);
+  const db = new Database(join(dataDir, "library.sqlite"), { create: true });
+  db.run(`CREATE TABLE videos (
+    id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, duration REAL,
+    last_watched_at TEXT, channel TEXT
+  ); PRAGMA user_version = 3;`);
+  db.query("INSERT INTO videos VALUES (?, ?, ?, ?, ?)").run(
+    "abcdefghijk",
+    "Older title",
+    45,
+    "2026-01-01T00:00:00.000Z",
+    "Older channel",
+  );
+  db.close();
+
+  const base = await launch(undefined, true, true);
+  expect((await history(base))[0]).toMatchObject({
+    title: "Older title",
+    channel: "Older channel",
+    positionSeconds: 0,
+  });
+  expect((await (await proxyResolve(base)).json()).positionSeconds).toBe(0);
 });
 
 const proxyResolve = (base: string) =>

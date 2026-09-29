@@ -6,6 +6,7 @@ import {
   type HistoryEntry,
   HistoryListSchema,
   OkResponseSchema,
+  type ProgressRequest,
   type ResolvedVideo,
   ResolvedVideoSchema,
   type ResolveRequest,
@@ -62,7 +63,14 @@ export class VideoApp extends LitElement {
   @state() private deleting = false;
   private historyRequest = 0;
   private watchedThisPlay = false;
+  private watchRecorded = false;
   private hls: Hls | null = null;
+  private pendingResumeSeconds = 0;
+  private lastProgressAt = 0;
+  private lastProgressSeconds = -1;
+  private progressInFlight = false;
+  private pendingProgress: { source: ResolvedVideo; seconds: number } | null =
+    null;
 
   private get busy(): boolean {
     return (
@@ -77,10 +85,13 @@ export class VideoApp extends LitElement {
   }
 
   private attachReady(): void {
+    this.pendingResumeSeconds = this.source?.positionSeconds ?? 0;
     if (this.attachSource()) {
       this.notice = {
         phase: "ready",
-        text: "Ready. Press play in the video controls.",
+        text: this.pendingResumeSeconds
+          ? `Ready to continue at ${durationLabel(this.pendingResumeSeconds)}. Press play in the video controls.`
+          : "Ready. Press play in the video controls.",
       };
     }
   }
@@ -91,6 +102,7 @@ export class VideoApp extends LitElement {
       passive: true,
     });
     window.addEventListener("resize", this.updateBackToPlayer);
+    document.addEventListener("visibilitychange", this.saveOnHide);
     void this.loadHistory();
   }
 
@@ -137,6 +149,10 @@ export class VideoApp extends LitElement {
     this.player.removeAttribute("src");
     this.player.load();
     this.watchedThisPlay = false;
+    this.watchRecorded = false;
+    this.pendingResumeSeconds = 0;
+    this.lastProgressAt = 0;
+    this.lastProgressSeconds = -1;
   }
 
   private attachSource(): boolean {
@@ -194,6 +210,7 @@ export class VideoApp extends LitElement {
     }
 
     const focused = this.ownerDocument.activeElement;
+    this.saveProgress(true);
     this.source = null;
     this.resetPlayer();
 
@@ -354,7 +371,64 @@ export class VideoApp extends LitElement {
 
   private startedPlay(): void {
     this.watchedThisPlay = false;
+    this.watchRecorded = false;
   }
+
+  private resumePlayback(): void {
+    if (!this.pendingResumeSeconds) return;
+    const position = this.pendingResumeSeconds;
+    try {
+      this.player.currentTime = position;
+      this.pendingResumeSeconds = 0;
+    } catch {
+      // Some HLS streams do not expose a seekable range immediately.
+    }
+  }
+
+  private saveProgress(force = false, completed = false): void {
+    const source = this.source;
+    if (!source || !this.watchRecorded) return;
+    const seconds = completed ? 0 : Math.floor(this.player.currentTime);
+    if (!Number.isFinite(seconds) || seconds < 0) return;
+    const now = Date.now();
+    if (!force && now - this.lastProgressAt < 5000) return;
+    if (!force && seconds === this.lastProgressSeconds) return;
+    this.lastProgressAt = now;
+    this.lastProgressSeconds = seconds;
+    this.pendingProgress = { source, seconds };
+    void this.flushProgress();
+  }
+
+  private async flushProgress(): Promise<void> {
+    if (this.progressInFlight) return;
+    this.progressInFlight = true;
+    try {
+      while (this.pendingProgress) {
+        const { source, seconds } = this.pendingProgress;
+        this.pendingProgress = null;
+        const request: ProgressRequest = {
+          token: source.token,
+          positionSeconds: seconds,
+        };
+        try {
+          await fetch(`/api/history/${source.id}/progress`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(request),
+            keepalive: true,
+          });
+        } catch {
+          // A later time update or pause can retry saving the position.
+        }
+      }
+    } finally {
+      this.progressInFlight = false;
+    }
+  }
+
+  private readonly saveOnHide = (): void => {
+    if (document.visibilityState === "hidden") this.saveProgress(true);
+  };
 
   private async playing(): Promise<void> {
     const source = this.source;
@@ -372,6 +446,9 @@ export class VideoApp extends LitElement {
         !OkResponseSchema.safeParse(await response.json()).success
       )
         throw new Error("Could not save watch history.");
+      if (this.source !== source) return;
+      this.watchRecorded = true;
+      if (this.player.paused) this.saveProgress(true);
       void this.loadHistory();
     } catch {
       if (this.source === source)
@@ -394,6 +471,7 @@ export class VideoApp extends LitElement {
   override disconnectedCallback(): void {
     window.removeEventListener("scroll", this.updateBackToPlayer);
     window.removeEventListener("resize", this.updateBackToPlayer);
+    document.removeEventListener("visibilitychange", this.saveOnHide);
     this.hls?.destroy();
     this.hls = null;
     super.disconnectedCallback();
@@ -467,7 +545,12 @@ export class VideoApp extends LitElement {
         }
         <!-- biome-ignore lint/a11y/useMediaCaption: Captions are not extracted in this app. -->
         <video id="player" controls playsinline preload="none" tabindex="0" aria-label="Video player"
-          @play=${this.startedPlay} @playing=${this.playing} @error=${this.playbackError}></video>
+          @play=${this.startedPlay} @playing=${this.playing} @loadedmetadata=${this.resumePlayback}
+          @canplay=${this.resumePlayback}
+          @timeupdate=${() => this.saveProgress()}
+          @pause=${() => this.saveProgress(true)}
+          @ended=${() => this.saveProgress(true, true)}
+          @error=${this.playbackError}></video>
       </section>
     `;
   }
@@ -489,7 +572,15 @@ export class VideoApp extends LitElement {
           <ul class="history-list">
             ${visibleEntries.map((entry) => this.renderHistoryEntry(entry))}
           </ul>
-          ${remaining > 0 ? html`<div class="history-navigation tool-bar"><button class="plain <big>" type="button" @click=${this.showMoreHistory}>Show ${Math.min(remaining, HISTORY_CHUNK_SIZE)} more</button></div>` : ""}
+          ${remaining > 0
+            ? html`
+          <div class="history-navigation tool-bar">
+            <button class="plain <big>" type="button"
+              @click=${this.showMoreHistory}>
+              Show ${Math.min(remaining, HISTORY_CHUNK_SIZE)} more
+            </button>
+          </div>`
+            : ""}
         `
         }
       </section>
@@ -504,10 +595,15 @@ export class VideoApp extends LitElement {
           <strong>${entry.title}</strong>
           <span class="history-meta">${entry.channel ?? "Channel unavailable"} · ${durationLabel(entry.duration)}</span>
           <span class="history-time">Watched ${new Date(entry.lastWatchedAt).toLocaleString()}</span>
+          ${entry.positionSeconds > 0
+            ? html`<span class="history-time">Continue at ${durationLabel(entry.positionSeconds)}</span>`
+            : ""}
           <a class="original-link" href=${entry.url} target="_blank" rel="noopener noreferrer"
             aria-label=${`Open ${entry.title} on YouTube`}>Open on YouTube ↗</a>
           <span class="badges" aria-label="Downloaded files">
-            ${mp4Available ? html`<chip class="archive">MP4 · ${fileSize(entry.mp4.sizeBytes)}</chip>` : html`<chip class="plain">No files</chip>`}
+            ${mp4Available
+              ? html`<chip class="archive">MP4 · ${fileSize(entry.mp4.sizeBytes)}</chip>`
+              : html`<chip class="plain">No files</chip>`}
           </span>
         </div>
         <div class="history-actions tool-bar">

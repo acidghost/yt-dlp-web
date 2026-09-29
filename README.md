@@ -48,7 +48,10 @@ unknown mode is rejected without contacting the server.
 Watch history is saved in SQLite at `DATA_DIR/library.sqlite` (default
 `./data/library.sqlite`) when the video actually starts playing, not when a URL
 is resolved. History Play reuses the downloaded MP4 when available; otherwise it
-prepares a fresh proxy session. History shows the original YouTube link, channel
+prepares a fresh proxy session. Playback position is saved periodically and on
+pause or when the page is hidden. Preparing the video again seeks to that
+position after metadata loads; reaching the end clears it. History shows the
+resume time when one is saved, along with the original YouTube link, channel
 (when yt-dlp supplies it), duration, watch time, and MP4 file sizes. Sizes and
 availability reflect the files currently on disk, not cached database values.
 Older rows may show “Channel unavailable” until fresh metadata is extracted

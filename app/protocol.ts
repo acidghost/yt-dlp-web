@@ -10,6 +10,11 @@ export type ResolveRequest = z.infer<typeof ResolveRequestSchema>;
 
 export const WatchRequestSchema = z.object({ token: z.string() });
 export type WatchRequest = z.infer<typeof WatchRequestSchema>;
+export const ProgressRequestSchema = z.object({
+  token: z.string(),
+  positionSeconds: z.number().finite().min(0).max(604800),
+});
+export type ProgressRequest = z.infer<typeof ProgressRequestSchema>;
 export const ApiErrorSchema = z.object({ error: z.string() });
 export type ApiError = z.infer<typeof ApiErrorSchema>;
 export const OkResponseSchema = z.object({ ok: z.literal(true) });
@@ -22,6 +27,7 @@ const VideoFields = z.object({
   title: z.string(),
   channel: z.string().nullable(),
   duration: z.number().nullable(),
+  positionSeconds: z.number(),
 });
 
 export const ResolvedVideoSchema = z.discriminatedUnion("kind", [
@@ -40,6 +46,7 @@ export const HistoryEntrySchema = z.object({
   channel: z.string().nullable(),
   duration: z.number().nullable(),
   lastWatchedAt: z.string(),
+  positionSeconds: z.number(),
   mp4: z.object({ sizeBytes: z.number().nullable() }),
 });
 export const HistoryListSchema = z.array(HistoryEntrySchema);

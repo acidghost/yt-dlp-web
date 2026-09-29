@@ -9,6 +9,7 @@ const video = {
   title: "Fixture video",
   channel: "Fixture channel",
   duration: 10,
+  positionSeconds: 0,
   stream: "/api/stream/abcdefghijk",
 };
 
@@ -19,6 +20,7 @@ const entry = (title: string) => ({
   channel: "Fixture channel",
   duration: 10,
   lastWatchedAt: "2026-09-27T10:00:00.000Z",
+  positionSeconds: 0,
   mp4: { sizeBytes: 10 },
 });
 
@@ -105,6 +107,34 @@ test("download mode attaches the saved MP4", async ({ page }) => {
   await expect(page.getByLabel("YouTube video URL")).toHaveValue(url);
   await expect(page.locator("#status")).toHaveAttribute("data-phase", "ready");
   await expect(page.locator("video")).toHaveAttribute("src", video.stream);
+});
+
+test("a saved position is shown and applied after metadata loads", async ({
+  page,
+}) => {
+  await page.route("**/api/history", (route) =>
+    route.fulfill({ json: [{ ...entry("Long video"), positionSeconds: 83 }] }),
+  );
+  await page.route("**/api/resolve", (route) =>
+    route.fulfill({ json: { ...video, duration: 240, positionSeconds: 83 } }),
+  );
+
+  await page.goto(`/?url=${encodeURIComponent(url)}&mode=mp4`);
+  await expect(page.locator("#status")).toContainText("continue at 1:23");
+  await expect(page.locator(".history-item")).toContainText("Continue at 1:23");
+  const seekedTo = await page.locator("video").evaluate((player) => {
+    let position = 0;
+    Object.defineProperty(player, "currentTime", {
+      configurable: true,
+      get: () => position,
+      set: (value: number) => {
+        position = value;
+      },
+    });
+    player.dispatchEvent(new Event("loadedmetadata"));
+    return position;
+  });
+  expect(seekedTo).toBe(83);
 });
 
 test("theater width and history chunks keep the player in place", async ({
