@@ -71,6 +71,14 @@ Old PoC `./tmp/<uuid>.mp4` files are neither imported nor deleted
 automatically. Review and remove them manually when no longer needed; `./tmp` is
 git-ignored.
 
+Before v1, schema changes may require a database reset. If the stored schema
+differs from this build's schema, startup fails with a reset instruction; it
+never changes or deletes the database automatically. Stop the server, then run
+`just reset-db` from the source tree or `yt-dlp-web --reset-db` with the same
+`DATA_DIR` as the server. This removes only `library.sqlite` and its SQLite
+journal files. It clears watch history, resume positions, and cached metadata,
+but leaves downloaded MP4s in `DATA_DIR/media/` for reuse.
+
 ## Container deployment
 
 Build for `linux/amd64` (the published `yt-dlp-oci` image supports that

@@ -1,4 +1,14 @@
+import { resetLibrary } from "./library";
 import { startServer } from "./server";
+
+if (process.argv.length > 2) {
+  if (process.argv.length !== 3 || process.argv[2] !== "--reset-db")
+    throw new Error("Usage: yt-dlp-web [--reset-db]");
+  const dataDir = process.env.DATA_DIR ?? "./data";
+  resetLibrary(dataDir);
+  console.log(`Reset library database in ${dataDir}`);
+  process.exit(0);
+}
 
 const port = Number(process.env.PORT ?? 3000);
 if (!Number.isInteger(port) || port < 1 || port > 65535)

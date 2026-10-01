@@ -12,6 +12,9 @@ build:
 start: build
     ./dist/yt-dlp-web
 
+reset-db:
+    bun app/index.ts --reset-db
+
 check:
     biome check .
 

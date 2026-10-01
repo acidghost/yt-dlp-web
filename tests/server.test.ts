@@ -3,6 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Library } from "../app/library";
 import { canonicalVideoUrl, type Download, InputError } from "../app/media";
 import { HistoryListSchema, ResolvedVideoSchema } from "../app/protocol";
 import { startServer } from "../app/server";
@@ -674,7 +675,7 @@ test("duplicate prepares share one download and both deletes are idempotent", as
   expect((await watched(base, a.id, again.token)).status).toBe(404);
 });
 
-test("migrates watched rows from the UUID history schema without adopting or deleting PoC files", async () => {
+test("rejects the old UUID history schema without touching PoC files", async () => {
   testDir = await mkdtemp(join(tmpdir(), "yt-dlp-web-test-"));
   const dataDir = join(testDir, "data");
   await mkdir(dataDir);
@@ -695,16 +696,34 @@ test("migrates watched rows from the UUID history schema without adopting or del
   const legacyFile = join(testDir, "tmp", `${oldToken}.mp4`);
   await mkdir(join(testDir, "tmp"));
   await writeFile(legacyFile, "do not touch");
+  expect(() => new Library(dataDir)).toThrow(
+    /Unsupported library schema.*reset/i,
+  );
+  expect(await Bun.file(legacyFile).text()).toBe("do not touch");
+});
+
+test("opens an existing current-schema database without resetting history", async () => {
+  testDir = await mkdtemp(join(tmpdir(), "yt-dlp-web-test-"));
+  const dataDir = join(testDir, "data");
+  await mkdir(dataDir);
+  const db = new Database(join(dataDir, "library.sqlite"), { create: true });
+  db.run(`CREATE TABLE videos (
+        id TEXT PRIMARY KEY NOT NULL,
+        title TEXT NOT NULL,
+        duration REAL,
+        last_watched_at TEXT,
+        channel TEXT,
+        position_seconds REAL NOT NULL DEFAULT 0
+      ); PRAGMA user_version = 4;`);
+  db.query(
+    "INSERT INTO videos (id, title, last_watched_at) VALUES (?, ?, ?)",
+  ).run("abcdefghijk", "Existing history", "2026-01-01T00:00:00.000Z");
+  db.close();
   const base = await launch(undefined, false, true);
   expect((await history(base))[0]).toMatchObject({
-    title: "Older video",
-    channel: null,
-    mp4: { sizeBytes: null },
+    title: "Existing history",
+    positionSeconds: 0,
   });
-  expect(await Bun.file(legacyFile).text()).toBe("do not touch");
-  const resolved = await (await resolve(base)).json();
-  expect((await watched(base, resolved.id, resolved.token)).status).toBe(200);
-  expect(await history(base)).toHaveLength(1);
 });
 
 test("handoff modes map to their preparation requests without recording a watch", async () => {
@@ -746,67 +765,45 @@ test("handoff modes map to their preparation requests without recording a watch"
   expect(await history(base)).toEqual([]);
 });
 
-test("migrates existing v2 watched history and fills in the channel on a later play", async () => {
-  testDir = await mkdtemp(join(tmpdir(), "yt-dlp-web-test-"));
-  const dataDir = join(testDir, "data");
-  await mkdir(dataDir);
-  const db = new Database(join(dataDir, "library.sqlite"), { create: true });
-  db.run(`CREATE TABLE videos (
-    id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, duration REAL, last_watched_at TEXT
-  ); PRAGMA user_version = 2;`);
-  db.query("INSERT INTO videos VALUES (?, ?, ?, ?)").run(
-    "abcdefghijk",
-    "Older title",
-    45,
-    "2026-01-01T00:00:00.000Z",
-  );
-  db.close();
-  const base = await launch(undefined, true, true);
-  expect((await history(base))[0]).toMatchObject({
-    title: "Older title",
-    channel: null,
-    duration: 45,
-    mp4: { sizeBytes: null },
-  });
-  const proxy = await (
-    await fetch(`${base}/api/resolve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, mode: "proxy" }),
-    })
-  ).json();
-  expect((await watched(base, proxy.id, proxy.token)).status).toBe(200);
-  expect((await history(base))[0].channel).toBe("Proxy channel");
-  server?.stop(true);
-  const restarted = await launch(undefined, true, true);
-  expect((await history(restarted))[0].channel).toBe("Proxy channel");
-});
-
-test("migrates v3 watched history with an empty resume position", async () => {
+test("rejects changed constraints even when columns and user_version match", async () => {
   testDir = await mkdtemp(join(tmpdir(), "yt-dlp-web-test-"));
   const dataDir = join(testDir, "data");
   await mkdir(dataDir);
   const db = new Database(join(dataDir, "library.sqlite"), { create: true });
   db.run(`CREATE TABLE videos (
     id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, duration REAL,
-    last_watched_at TEXT, channel TEXT
-  ); PRAGMA user_version = 3;`);
-  db.query("INSERT INTO videos VALUES (?, ?, ?, ?, ?)").run(
-    "abcdefghijk",
-    "Older title",
-    45,
-    "2026-01-01T00:00:00.000Z",
-    "Older channel",
-  );
+    last_watched_at TEXT, channel TEXT,
+    position_seconds REAL NOT NULL DEFAULT 0 CHECK(position_seconds >= 0)
+  ); PRAGMA user_version = 4;`);
   db.close();
+  expect(() => new Library(dataDir)).toThrow(
+    /Unsupported library schema.*reset/i,
+  );
+});
 
-  const base = await launch(undefined, true, true);
-  expect((await history(base))[0]).toMatchObject({
-    title: "Older title",
-    channel: "Older channel",
-    positionSeconds: 0,
+test("reset-db removes only the database and allows a fresh start", async () => {
+  testDir = await mkdtemp(join(tmpdir(), "yt-dlp-web-test-"));
+  const dataDir = join(testDir, "data");
+  await mkdir(dataDir);
+  const db = new Database(join(dataDir, "library.sqlite"), { create: true });
+  db.run("CREATE TABLE videos (id TEXT PRIMARY KEY)");
+  db.close();
+  const media = join(dataDir, "media", "abcdefghijk", "video.mp4");
+  await mkdir(join(dataDir, "media", "abcdefghijk"), { recursive: true });
+  await writeFile(media, "saved video");
+  const reset = Bun.spawnSync({
+    cmd: [
+      process.execPath,
+      join(import.meta.dir, "../app/index.ts"),
+      "--reset-db",
+    ],
+    env: { ...process.env, DATA_DIR: dataDir },
   });
-  expect((await (await proxyResolve(base)).json()).positionSeconds).toBe(0);
+  expect(reset.exitCode).toBe(0);
+  expect(await Bun.file(join(dataDir, "library.sqlite")).exists()).toBe(false);
+  expect(await Bun.file(media).text()).toBe("saved video");
+  const base = await launch(undefined, false, true);
+  expect(await history(base)).toEqual([]);
 });
 
 const proxyResolve = (base: string) =>

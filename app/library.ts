@@ -1,5 +1,5 @@
 import { Database, type Statement } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { HistoryEntry, VideoId } from "./protocol";
 
@@ -22,6 +22,38 @@ type Metadata = {
   channel: string | null;
 };
 
+const createVideos = `CREATE TABLE videos (
+        id TEXT PRIMARY KEY NOT NULL,
+        title TEXT NOT NULL,
+        duration REAL,
+        last_watched_at TEXT,
+        channel TEXT,
+        position_seconds REAL NOT NULL DEFAULT 0
+      )`;
+
+type SchemaRow = {
+  type: string;
+  name: string;
+  tbl_name: string;
+  sql: string | null;
+};
+
+function schemaRows(db: Database): SchemaRow[] {
+  return db
+    .query<SchemaRow, []>(
+      `SELECT type, name, tbl_name, sql FROM main.sqlite_schema
+       WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name`,
+    )
+    .all();
+}
+
+// Run only while the server is stopped; media files are deliberately separate.
+export function resetLibrary(dataDir: string): void {
+  const path = join(dataDir, "library.sqlite");
+  for (const suffix of ["", "-wal", "-shm", "-journal"])
+    rmSync(path + suffix, { force: true });
+}
+
 export class Library {
   private db: Database;
   // Assigned by prepareStatements(), called from the constructor.
@@ -41,66 +73,34 @@ export class Library {
 
   constructor(dataDir: string) {
     mkdirSync(dataDir, { recursive: true });
-    this.db = new Database(join(dataDir, "library.sqlite"), { create: true });
-    this.migrate();
-    this.prepareStatements();
+    const path = join(dataDir, "library.sqlite");
+    this.db = new Database(path, { create: true });
+    try {
+      this.checkSchema(path);
+      this.prepareStatements();
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
-  // One row per canonical video ID; migrations never touch media files.
-  private migrate(): void {
-    const { user_version: version } = this.db
-      .query("PRAGMA user_version")
-      .get() as { user_version: number };
-
-    if (version === 0) {
-      this.db.run(`CREATE TABLE videos (
-        id TEXT PRIMARY KEY NOT NULL,
-        title TEXT NOT NULL,
-        duration REAL,
-        last_watched_at TEXT,
-        channel TEXT,
-        position_seconds REAL NOT NULL DEFAULT 0
-      );
-      PRAGMA user_version = 4;`);
+  private checkSchema(path: string): void {
+    const actual = schemaRows(this.db);
+    if (actual.length === 0) {
+      this.db.run(createVideos);
       return;
     }
 
-    // v1 stored PoC UUIDs in media_token. Drop the column; never import or
-    // delete those tmp/ files.
-    if (version === 1) {
-      this.db.transaction(() => {
-        this.db.run(`CREATE TABLE videos_new (
-          id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, duration REAL,
-          last_watched_at TEXT, channel TEXT,
-          position_seconds REAL NOT NULL DEFAULT 0
+    const reference = new Database(":memory:");
+    try {
+      reference.run(createVideos);
+      if (JSON.stringify(actual) !== JSON.stringify(schemaRows(reference)))
+        throw new Error(
+          `Unsupported library schema in ${path}. Stop the server and run yt-dlp-web --reset-db with the same DATA_DIR.`,
         );
-        INSERT INTO videos_new (id, title, duration, last_watched_at)
-          SELECT id, title, duration, last_watched_at FROM videos;
-        DROP TABLE videos;
-        ALTER TABLE videos_new RENAME TO videos;
-        PRAGMA user_version = 4;`);
-      })();
-      return;
+    } finally {
+      reference.close();
     }
-
-    if (version === 2) {
-      this.db.transaction(() => {
-        this.db.run(
-          "ALTER TABLE videos ADD COLUMN channel TEXT; ALTER TABLE videos ADD COLUMN position_seconds REAL NOT NULL DEFAULT 0; PRAGMA user_version = 4;",
-        );
-      })();
-      return;
-    }
-
-    if (version === 3) {
-      this.db.run(
-        "ALTER TABLE videos ADD COLUMN position_seconds REAL NOT NULL DEFAULT 0; PRAGMA user_version = 4;",
-      );
-      return;
-    }
-
-    if (version !== 4)
-      throw new Error(`Unsupported library schema version: ${version}`);
   }
 
   private prepareStatements(): void {
