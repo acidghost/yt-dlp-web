@@ -572,15 +572,17 @@ export class VideoApp extends LitElement {
           <ul class="history-list">
             ${visibleEntries.map((entry) => this.renderHistoryEntry(entry))}
           </ul>
-          ${remaining > 0
-            ? html`
+          ${
+            remaining > 0
+              ? html`
           <div class="history-navigation tool-bar">
             <button class="plain <big>" type="button"
               @click=${this.showMoreHistory}>
               Show ${Math.min(remaining, HISTORY_CHUNK_SIZE)} more
             </button>
           </div>`
-            : ""}
+              : ""
+          }
         `
         }
       </section>
@@ -595,15 +597,19 @@ export class VideoApp extends LitElement {
           <strong>${entry.title}</strong>
           <span class="history-meta">${entry.channel ?? "Channel unavailable"} · ${durationLabel(entry.duration)}</span>
           <span class="history-time">Watched ${new Date(entry.lastWatchedAt).toLocaleString()}</span>
-          ${entry.positionSeconds > 0
-            ? html`<span class="history-time">Continue at ${durationLabel(entry.positionSeconds)}</span>`
-            : ""}
+          ${
+            entry.positionSeconds > 0
+              ? html`<span class="history-time">Continue at ${durationLabel(entry.positionSeconds)}</span>`
+              : ""
+          }
           <a class="original-link" href=${entry.url} target="_blank" rel="noopener noreferrer"
             aria-label=${`Open ${entry.title} on YouTube`}>Open on YouTube ↗</a>
           <span class="badges" aria-label="Downloaded files">
-            ${mp4Available
-              ? html`<chip class="archive">MP4 · ${fileSize(entry.mp4.sizeBytes)}</chip>`
-              : html`<chip class="plain">No files</chip>`}
+            ${
+              mp4Available
+                ? html`<chip class="archive">MP4 · ${fileSize(entry.mp4.sizeBytes)}</chip>`
+                : html`<chip class="plain">No files</chip>`
+            }
           </span>
         </div>
         <div class="history-actions tool-bar">
