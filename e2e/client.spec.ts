@@ -363,7 +363,7 @@ test("theater width and history chunks keep the player in place", async ({
   await expect(page.getByRole("button", { name: /Show .* more/ })).toHaveCount(
     0,
   );
-  const backToPlayer = page.getByRole("link", { name: "Back to player" });
+  const backToPlayer = page.getByRole("button", { name: "Back to player" });
   await page.evaluate(() => window.scrollTo(0, 0));
   await expect(backToPlayer).toHaveCount(0);
   await page.evaluate(() => {
@@ -380,9 +380,43 @@ test("theater width and history chunks keep the player in place", async ({
       (element) => getComputedStyle(element).position,
     ),
   ).toBe("fixed");
+  const originalUrl = page.url();
+  const historyLength = await page.evaluate(() => window.history.length);
   await backToPlayer.click();
   await expect(page.locator("#player")).toBeFocused();
   await expect(backToPlayer).toHaveCount(0);
+  await expect(page).toHaveURL(originalUrl);
+  expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
+  expect(
+    await page
+      .locator("#player")
+      .evaluate((element) => element.matches(":target")),
+  ).toBe(false);
+  await expect(page.locator("#player")).toHaveCSS("outline-style", "none");
+  expect(
+    await page.evaluate(
+      (original) => document.querySelector("video") === original,
+      player,
+    ),
+  ).toBe(true);
+
+  // Keyboard activation should focus the player without fragment navigation.
+  await page.evaluate(() => {
+    const videoElement = document.querySelector("video");
+    if (!videoElement) throw new Error("Missing player");
+    window.scrollTo(
+      0,
+      window.scrollY + videoElement.getBoundingClientRect().bottom + 1,
+    );
+  });
+  await expect(backToPlayer).toBeVisible();
+  await backToPlayer.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#player")).toBeFocused();
+  await expect(backToPlayer).toHaveCount(0);
+  await expect(page).toHaveURL(originalUrl);
+  expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
+  await expect(page.locator("#player")).toHaveCSS("outline-style", "solid");
 
   await page.setViewportSize({ width: 375, height: 812 });
   expect(

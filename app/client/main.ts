@@ -511,8 +511,8 @@ export class VideoApp extends LitElement {
       ${this.renderPlayer()}
       ${
         this.showBackToPlayer
-          ? html`<a class="back-to-player plain <button> <big>" href="#player"
-              @click=${this.focusPlayer}>Back to player</a>`
+          ? html`<button class="back-to-player plain <big>" type="button"
+              @click=${this.focusPlayer}>Back to player</button>`
           : ""
       }
       ${this.renderHistory()}
