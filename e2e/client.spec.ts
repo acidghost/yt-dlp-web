@@ -137,6 +137,178 @@ test("a saved position is shown and applied after metadata loads", async ({
   expect(seekedTo).toBe(83);
 });
 
+test("the compact speed selector sits beside shortcut help and stays in sync", async ({
+  page,
+}) => {
+  await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/resolve", (route) => route.fulfill({ json: video }));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+
+  const player = page.locator("video");
+  const speed = page.getByRole("combobox", { name: "Playback speed" });
+  await expect(speed).toBeDisabled();
+  await page.getByLabel("YouTube video URL").fill(url);
+  await page.getByLabel("Playback mode").selectOption("mp4");
+  await page.getByRole("button", { name: "Prepare video" }).click();
+  await expect(speed).toBeEnabled();
+  await expect(speed).toHaveValue("1");
+  const videoBounds = await player.boundingBox();
+  const helpBounds = await page.locator(".player-shortcuts").boundingBox();
+  const controlBounds = await speed.boundingBox();
+  expect(videoBounds).not.toBeNull();
+  expect(helpBounds).not.toBeNull();
+  expect(controlBounds).not.toBeNull();
+  expect(controlBounds?.width).toBeLessThan(110);
+  expect(controlBounds?.y).toBeGreaterThanOrEqual(
+    (videoBounds?.y ?? 0) + (videoBounds?.height ?? 0),
+  );
+  expect(controlBounds?.x).toBeGreaterThan(
+    (helpBounds?.x ?? 0) + (helpBounds?.width ?? 0),
+  );
+  expect(
+    Math.abs(
+      (controlBounds?.y ?? 0) +
+        (controlBounds?.height ?? 0) / 2 -
+        (helpBounds?.y ?? 0) -
+        (helpBounds?.height ?? 0) / 2,
+    ),
+  ).toBeLessThan(3);
+
+  await speed.selectOption("1.5");
+  expect(
+    await player.evaluate(
+      (element) => (element as HTMLVideoElement).playbackRate,
+    ),
+  ).toBe(1.5);
+  await speed.focus();
+  await page.keyboard.press("Shift+Period");
+  expect(
+    await player.evaluate(
+      (element) => (element as HTMLVideoElement).playbackRate,
+    ),
+  ).toBe(1.5);
+  await player.focus();
+  await page.keyboard.press("Shift+Period");
+  await expect(speed).toHaveValue("1.75");
+  await player.evaluate((element) => {
+    (element as HTMLVideoElement).playbackRate = 0.75;
+  });
+  await expect(speed).toHaveValue("0.75");
+  await player.evaluate((element) => {
+    (element as HTMLVideoElement).playbackRate = 1.1;
+  });
+  await expect(speed).toHaveValue("1.1");
+
+  await page.getByRole("button", { name: "Fill page" }).click();
+  await expect(speed).toHaveValue("1.1");
+  expect(
+    await player.evaluate(
+      (element) => (element as HTMLVideoElement).playbackRate,
+    ),
+  ).toBe(1.1);
+});
+
+test("keyboard shortcuts control a prepared player without hijacking form controls", async ({
+  page,
+}) => {
+  await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/resolve", (route) => route.fulfill({ json: video }));
+  await page.goto("/");
+
+  const player = page.locator("video");
+  await page.keyboard.press("Space");
+  expect(
+    await player.evaluate((element) => (element as HTMLVideoElement).paused),
+  ).toBe(true);
+
+  await page.getByLabel("YouTube video URL").fill(url);
+  await page.getByLabel("Playback mode").selectOption("mp4");
+  await page.getByRole("button", { name: "Prepare video" }).click();
+  await expect(player).toHaveAttribute("src", video.stream);
+
+  await player.evaluate((element) => {
+    const videoElement = element as HTMLVideoElement;
+    let paused = true;
+    let position = 2;
+    Object.defineProperties(videoElement, {
+      paused: { configurable: true, get: () => paused },
+      currentTime: {
+        configurable: true,
+        get: () => position,
+        set: (value: number) => {
+          position = value;
+        },
+      },
+      duration: { configurable: true, get: () => 30 },
+    });
+    videoElement.play = async () => {
+      paused = false;
+    };
+    videoElement.pause = () => {
+      paused = true;
+    };
+  });
+
+  const state = () =>
+    player.evaluate((element) => {
+      const videoElement = element as HTMLVideoElement;
+      return {
+        paused: videoElement.paused,
+        time: videoElement.currentTime,
+        rate: videoElement.playbackRate,
+        volume: videoElement.volume,
+        muted: videoElement.muted,
+      };
+    });
+  await player.focus();
+  await page.keyboard.press("Space");
+  expect((await state()).paused).toBe(false);
+  await page.keyboard.press("KeyK");
+  expect((await state()).paused).toBe(true);
+  await page.keyboard.press("ArrowRight");
+  expect((await state()).time).toBe(7);
+  await page.keyboard.press("KeyL");
+  expect((await state()).time).toBe(17);
+  await page.keyboard.press("KeyJ");
+  expect((await state()).time).toBe(7);
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  expect((await state()).time).toBe(0);
+  await page.keyboard.press("Shift+Period");
+  expect((await state()).rate).toBe(1.25);
+  await page.keyboard.press("Shift+Comma");
+  expect((await state()).rate).toBe(1);
+  await page.keyboard.press("KeyM");
+  expect((await state()).muted).toBe(true);
+
+  await page.getByLabel("YouTube video URL").focus();
+  await page.keyboard.press("Space");
+  await page.keyboard.press("ArrowRight");
+  expect((await state()).paused).toBe(true);
+  expect((await state()).time).toBe(0);
+  await page.getByRole("button", { name: "Fill page" }).focus();
+  await page.keyboard.press("Space");
+  expect((await state()).paused).toBe(true);
+
+  await page.locator("#title").click();
+  await page.keyboard.press("Control+ArrowRight");
+  expect((await state()).time).toBe(0);
+  await page.keyboard.press("ArrowRight");
+  expect((await state()).time).toBe(5);
+  await page.evaluate(() => {
+    document.body.style.minHeight = "200vh";
+    document.body.tabIndex = -1;
+    document.body.focus();
+    window.scrollTo(0, 0);
+  });
+  await page.keyboard.press("ArrowDown");
+  await expect
+    .poll(() => page.evaluate(() => window.scrollY))
+    .toBeGreaterThan(0);
+  expect((await state()).volume).toBe(1);
+});
+
 test("theater width and history chunks keep the player in place", async ({
   page,
 }) => {

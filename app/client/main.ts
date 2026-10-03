@@ -18,10 +18,12 @@ import {
   parseHandoff,
   resolveKind,
 } from "./handoff";
+import { controlPlayer } from "./player-keys";
 
 type Phase = "idle" | "extracting" | "downloading" | "ready" | "error";
 type Notice = { phase: Phase; text: string };
 const HISTORY_CHUNK_SIZE = 12;
+const PLAYBACK_SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
 function fileSize(bytes: number | null): string {
   if (bytes === null) return "Size unavailable";
@@ -58,6 +60,7 @@ export class VideoApp extends LitElement {
   @state() private history: HistoryEntry[] = [];
   @state() private historyError = "";
   @state() private widePlayer = false;
+  @state() private playbackRate = 1;
   @state() private showBackToPlayer = false;
   @state() private visibleHistoryCount = HISTORY_CHUNK_SIZE;
   @state() private deleting = false;
@@ -103,6 +106,7 @@ export class VideoApp extends LitElement {
     });
     window.addEventListener("resize", this.updateBackToPlayer);
     document.addEventListener("visibilitychange", this.saveOnHide);
+    document.addEventListener("keydown", this.handlePlayerKey);
     void this.loadHistory();
   }
 
@@ -430,6 +434,30 @@ export class VideoApp extends LitElement {
     if (document.visibilityState === "hidden") this.saveProgress(true);
   };
 
+  private changePlaybackSpeed(event: Event): void {
+    const rate = Number((event.currentTarget as HTMLSelectElement).value);
+    if (PLAYBACK_SPEEDS.includes(rate)) this.player.playbackRate = rate;
+  }
+
+  private syncPlaybackSpeed(): void {
+    this.playbackRate = this.player.playbackRate;
+  }
+
+  private readonly handlePlayerKey = (event: KeyboardEvent): void => {
+    if (!this.source || event.altKey || event.ctrlKey || event.metaKey) return;
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      (target.closest(
+        "input, textarea, select, button, a, [contenteditable], [role='textbox'], [role='slider']",
+      ) ||
+        (target as HTMLElement).isContentEditable)
+    )
+      return;
+
+    if (controlPlayer(this.player, event)) event.preventDefault();
+  };
+
   private async playing(): Promise<void> {
     const source = this.source;
     if (!source || this.watchedThisPlay) return;
@@ -472,6 +500,7 @@ export class VideoApp extends LitElement {
     window.removeEventListener("scroll", this.updateBackToPlayer);
     window.removeEventListener("resize", this.updateBackToPlayer);
     document.removeEventListener("visibilitychange", this.saveOnHide);
+    document.removeEventListener("keydown", this.handlePlayerKey);
     this.hls?.destroy();
     this.hls = null;
     super.disconnectedCallback();
@@ -492,6 +521,10 @@ export class VideoApp extends LitElement {
 
   override updated(): void {
     this.updateBackToPlayer();
+    const speed = this.querySelector<HTMLSelectElement>(
+      ".speed-control select",
+    );
+    if (speed) speed.value = String(this.playbackRate);
   }
 
   private renderPlayer() {
@@ -546,11 +579,24 @@ export class VideoApp extends LitElement {
         <!-- biome-ignore lint/a11y/useMediaCaption: Captions are not extracted in this app. -->
         <video id="player" controls playsinline preload="none" tabindex="0" aria-label="Video player"
           @play=${this.startedPlay} @playing=${this.playing} @loadedmetadata=${this.resumePlayback}
-          @canplay=${this.resumePlayback}
+          @canplay=${this.resumePlayback} @ratechange=${this.syncPlaybackSpeed}
           @timeupdate=${() => this.saveProgress()}
           @pause=${() => this.saveProgress(true)}
           @ended=${() => this.saveProgress(true, true)}
           @error=${this.playbackError}></video>
+        <div class="player-tools">
+          <p class="hint player-shortcuts">
+            Keyboard: <kbd>Space</kbd>/<kbd>K</kbd> play/pause · <kbd>←</kbd>/<kbd>→</kbd> seek 5s
+            · <kbd>J</kbd>/<kbd>L</kbd> seek 10s · <kbd>&lt;</kbd>/<kbd>&gt;</kbd> speed · <kbd>M</kbd> mute
+          </p>
+          <label class="speed-control">Speed
+            <select aria-label="Playback speed"
+              @change=${this.changePlaybackSpeed} ?disabled=${!this.source}>
+              ${PLAYBACK_SPEEDS.map((rate) => html`<option value=${rate}>${rate}×</option>`)}
+              ${PLAYBACK_SPEEDS.includes(this.playbackRate) ? "" : html`<option value=${this.playbackRate}>${this.playbackRate}×</option>`}
+            </select>
+          </label>
+        </div>
       </section>
     `;
   }

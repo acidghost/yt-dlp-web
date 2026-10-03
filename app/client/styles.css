@@ -193,6 +193,39 @@ video:focus-visible {
   outline-offset: 3px;
 }
 
+.player-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-top: 0.75rem;
+}
+
+.player-shortcuts {
+  flex: 1 1 44rem;
+  min-inline-size: 0;
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.8;
+}
+
+.speed-control {
+  /* missing.css sizes selects through this variable, even inside labels. */
+  --input-inline-size-internal: 5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--muted-fg);
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.speed-control select {
+  min-block-size: 2.25rem;
+  margin: 0;
+  padding: 0.2rem 0.35rem;
+}
+
 .wide-player video {
   max-height: 85vh;
 }
