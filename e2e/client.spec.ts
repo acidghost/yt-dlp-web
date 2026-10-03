@@ -1063,12 +1063,23 @@ for (const mode of ["mp4", "proxy"] as const) {
           ),
         )
         .toBeGreaterThan(0);
-      const target =
-        expected ??
-        (await player.evaluate((el: HTMLVideoElement) => el.duration));
-      await expect
-        .poll(() => player.evaluate((el: HTMLVideoElement) => el.currentTime))
-        .toBeCloseTo(target, 1);
+      if (expected === null) {
+        // HLS can refine the 12-second fixture's duration after the initial seek.
+        // Sample both values together and allow 250 ms of end-of-stream drift.
+        await expect
+          .poll(() =>
+            player.evaluate(
+              (el: HTMLVideoElement) =>
+                el.currentTime <= el.duration &&
+                el.currentTime >= el.duration - 0.25,
+            ),
+          )
+          .toBe(true);
+      } else {
+        await expect
+          .poll(() => player.evaluate((el: HTMLVideoElement) => el.currentTime))
+          .toBeCloseTo(expected, 1);
+      }
       if (expected === 0)
         await expect(page.locator("#status")).toHaveText(
           "Ready. Press play in the video controls.",
