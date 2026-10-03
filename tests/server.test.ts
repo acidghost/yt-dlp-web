@@ -410,7 +410,7 @@ const progress = (
     body: JSON.stringify({ token, positionSeconds }),
   });
 
-test("saves playback position for both modes and clears it near the end", async () => {
+test("saves playback position for both modes and retains it near the end", async () => {
   const base = await launch(undefined, true);
   const proxy = await (await proxyResolve(base)).json();
   expect(proxy.positionSeconds).toBe(0);
@@ -437,7 +437,109 @@ test("saves playback position for both modes and clears it near the end", async 
   expect(
     (await progress(restarted, freshProxy.id, freshProxy.token, 29)).status,
   ).toBe(200);
+  expect((await history(restarted))[0].positionSeconds).toBe(29);
+});
+
+test("resets progress without a playback token and preserves history and files across restart", async () => {
+  const base = await launch();
+  const video = await (await resolve(base)).json();
+  await watched(base, video.id, video.token);
+  await progress(base, video.id, video.token, 10);
+  const before = (await history(base))[0];
+  const reset = (id: string, headers = {}) =>
+    fetch(`${base}/api/history/${id}/progress`, { method: "DELETE", headers });
+
+  expect(
+    (await reset(video.id, { Origin: "https://evil.example" })).status,
+  ).toBe(403);
+  expect((await reset(video.id, { Host: "evil.example" })).status).toBe(403);
+  expect((await history(base))[0].positionSeconds).toBe(10);
+  expect((await reset("short")).status).toBe(404);
+  expect((await reset("aaaaaaaaaaa")).status).toBe(404);
+  const response = await reset(video.id);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ ok: true });
+  expect((await history(base))[0]).toEqual({ ...before, positionSeconds: 0 });
+  expect((await reset(video.id)).status).toBe(200);
+
+  server?.stop(true);
+  const restarted = await launch(undefined, false, true);
+  expect((await history(restarted))[0]).toEqual({
+    ...before,
+    positionSeconds: 0,
+  });
+  expect((await (await resolve(restarted)).json()).positionSeconds).toBe(0);
+});
+
+test("marks history fully watched using trusted duration without a playback token", async () => {
+  const base = await launch(async (_url, path) => {
+    await writeFile(path, "abcdefghij");
+    return { title: "Fixture", channel: "Fixture channel", duration: 10.5 };
+  });
+  const video = await (await resolve(base)).json();
+  await watched(base, video.id, video.token);
+  const before = (await history(base))[0];
+  const mark = (id: string, headers = {}) =>
+    fetch(`${base}/api/history/${id}/progress`, { method: "PUT", headers });
+
+  expect(
+    (await mark(video.id, { Origin: "https://evil.example" })).status,
+  ).toBe(403);
+  expect((await mark(video.id, { Host: "evil.example" })).status).toBe(403);
+  expect(
+    (await mark(video.id, { "Sec-Fetch-Site": "cross-site" })).status,
+  ).toBe(403);
+  expect((await history(base))[0].positionSeconds).toBe(0);
+  expect((await mark("short")).status).toBe(404);
+  expect((await mark("aaaaaaaaaaa")).status).toBe(404);
+  const response = await mark(video.id);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ ok: true });
+  expect((await mark(video.id)).status).toBe(200);
+  expect((await history(base))[0]).toEqual({
+    ...before,
+    positionSeconds: video.duration,
+  });
+
+  server?.stop(true);
+  const restarted = await launch(undefined, false, true);
+  expect((await history(restarted))[0]).toEqual({
+    ...before,
+    positionSeconds: video.duration,
+  });
+  expect((await (await resolve(restarted)).json()).positionSeconds).toBe(
+    video.duration,
+  );
+  expect(
+    (
+      await fetch(`${restarted}/api/history/${video.id}/progress`, {
+        method: "DELETE",
+      })
+    ).status,
+  ).toBe(200);
   expect((await history(restarted))[0].positionSeconds).toBe(0);
+});
+
+test("marking watched refuses unknown or unusable durations without changing progress", async () => {
+  for (const duration of [null, 0, -1]) {
+    const base = await launch(async (_url, path) => {
+      await writeFile(path, "abcdefghij");
+      return { title: "Fixture", channel: null, duration };
+    });
+    const video = await (await resolve(base)).json();
+    await watched(base, video.id, video.token);
+    const response = await fetch(`${base}/api/history/${video.id}/progress`, {
+      method: "PUT",
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "Video duration is unavailable.",
+    });
+    expect((await history(base))[0].positionSeconds).toBe(0);
+    server?.stop(true);
+    server = undefined;
+    await rm(testDir, { recursive: true, force: true });
+  }
 });
 
 test("history is written only for a successfully resolved, playing proxy; survives restart and replays", async () => {

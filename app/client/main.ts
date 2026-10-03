@@ -22,6 +22,7 @@ import {
   videoStartSeconds,
 } from "./handoff";
 import { controlPlayer } from "./player-keys";
+import { fullyWatched, resumePosition } from "./watch-progress";
 
 type Phase = "idle" | "extracting" | "downloading" | "ready" | "error";
 type Notice = { phase: Phase; text: string };
@@ -65,6 +66,7 @@ export class VideoApp extends LitElement {
   @state() private showBackToPlayer = false;
   @state() private visibleHistoryCount = HISTORY_CHUNK_SIZE;
   @state() private deleting = false;
+  @state() private updatingProgress = false;
   @state() private copyStatus = "";
   @state() private copyFallback = "";
   private copyStatusTimer: number | undefined;
@@ -77,12 +79,14 @@ export class VideoApp extends LitElement {
   private lastProgressAt = 0;
   private lastProgressSeconds = -1;
   private progressInFlight = false;
+  private progressSaved: Promise<void> = Promise.resolve();
   private pendingProgress: { source: ResolvedVideo; seconds: number } | null =
     null;
 
   private get busy(): boolean {
     return (
       this.deleting ||
+      this.updatingProgress ||
       this.notice.phase === "extracting" ||
       this.notice.phase === "downloading"
     );
@@ -94,7 +98,7 @@ export class VideoApp extends LitElement {
 
   private attachReady(): void {
     this.pendingResumeSeconds =
-      this.startSeconds ?? this.source?.positionSeconds ?? 0;
+      this.startSeconds ?? (this.source ? resumePosition(this.source) : 0);
     if (this.attachSource()) {
       this.notice = {
         phase: "ready",
@@ -144,7 +148,12 @@ export class VideoApp extends LitElement {
       if (!response.ok) throw new Error("Could not load history.");
       const entries = HistoryListSchema.parse(await response.json());
       if (request !== this.historyRequest) return;
-      this.history = entries;
+      // A history read may have started before the latest progress save.
+      this.history = entries.map((entry) =>
+        this.watchRecorded && entry.id === this.source?.id
+          ? { ...entry, positionSeconds: this.source.positionSeconds }
+          : entry,
+      );
       this.historyError = "";
     } catch {
       if (request !== this.historyRequest) return;
@@ -424,6 +433,72 @@ export class VideoApp extends LitElement {
     }
   }
 
+  private async setWatchProgress(
+    entry: HistoryEntry,
+    watched: boolean,
+  ): Promise<void> {
+    if (this.busy) return;
+    const failureMessage = watched
+      ? "Could not mark video as watched. Try again."
+      : "Could not reset watch progress. Try again.";
+    this.updatingProgress = true;
+    ++this.historyRequest;
+    const source = this.source?.id === entry.id ? this.source : null;
+    if (source) {
+      // Pause without saving again; queued/in-flight writes must finish before the edit.
+      this.watchRecorded = false;
+      this.player.pause();
+    }
+    if (this.pendingProgress?.source.id === entry.id)
+      this.pendingProgress = null;
+
+    try {
+      await this.progressSaved;
+      const response = await fetch(`/api/history/${entry.id}/progress`, {
+        method: watched ? "PUT" : "DELETE",
+      });
+      if (
+        !response.ok ||
+        !OkResponseSchema.safeParse(await response.json()).success
+      )
+        throw new Error(failureMessage);
+
+      if (source) {
+        // Invalidate any late watch-recording response from before this edit.
+        this.source = {
+          ...source,
+          positionSeconds: watched ? (entry.duration ?? 0) : 0,
+        };
+        this.watchedThisPlay = false;
+        this.pendingResumeSeconds = 0;
+        this.resumePlayback();
+        this.lastProgressAt = 0;
+        this.lastProgressSeconds = -1;
+        this.startSeconds = undefined;
+        this.updateAddress();
+        this.notice = {
+          phase: "ready",
+          text: watched
+            ? "Marked as fully watched. Press play to start from the beginning."
+            : "Watch progress reset. Press play to start from the beginning.",
+        };
+      }
+      await this.loadHistory();
+    } catch {
+      this.historyError = failureMessage;
+      // A failed edit leaves the paused source usable and its saved progress intact.
+      if (source) this.watchedThisPlay = false;
+    } finally {
+      this.updatingProgress = false;
+      await this.updateComplete;
+      // The action changes after editing progress; keep keyboard focus in this row.
+      const item = [
+        ...this.querySelectorAll<HTMLLIElement>(".history-item"),
+      ].find((element) => element.dataset.id === entry.id);
+      item?.querySelector<HTMLButtonElement>(".history-play")?.focus();
+    }
+  }
+
   private startedPlay(): void {
     this.watchedThisPlay = false;
     this.watchRecorded = false;
@@ -450,10 +525,10 @@ export class VideoApp extends LitElement {
     }
   }
 
-  private saveProgress(force = false, completed = false): void {
+  private saveProgress(force = false): void {
     const source = this.source;
-    if (!source || !this.watchRecorded) return;
-    const seconds = completed ? 0 : Math.floor(this.player.currentTime);
+    if (!source || !this.watchRecorded || this.updatingProgress) return;
+    const seconds = Math.floor(this.player.currentTime);
     if (!Number.isFinite(seconds) || seconds < 0) return;
     const now = Date.now();
     if (!force && now - this.lastProgressAt < 5000) return;
@@ -461,7 +536,7 @@ export class VideoApp extends LitElement {
     this.lastProgressAt = now;
     this.lastProgressSeconds = seconds;
     this.pendingProgress = { source, seconds };
-    void this.flushProgress();
+    if (!this.progressInFlight) this.progressSaved = this.flushProgress();
   }
 
   private async flushProgress(): Promise<void> {
@@ -476,12 +551,23 @@ export class VideoApp extends LitElement {
           positionSeconds: seconds,
         };
         try {
-          await fetch(`/api/history/${source.id}/progress`, {
+          const response = await fetch(`/api/history/${source.id}/progress`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(request),
             keepalive: true,
           });
+          if (
+            !response.ok ||
+            !OkResponseSchema.safeParse(await response.json()).success
+          )
+            continue;
+          source.positionSeconds = seconds;
+          this.history = this.history.map((entry) =>
+            entry.id === source.id
+              ? { ...entry, positionSeconds: seconds }
+              : entry,
+          );
         } catch {
           // A later time update or pause can retry saving the position.
         }
@@ -557,7 +643,7 @@ export class VideoApp extends LitElement {
 
   private async playing(): Promise<void> {
     const source = this.source;
-    if (!source || this.watchedThisPlay) return;
+    if (!source || this.watchedThisPlay || this.updatingProgress) return;
     this.watchedThisPlay = true;
     try {
       const request: WatchRequest = { token: source.token };
@@ -571,7 +657,7 @@ export class VideoApp extends LitElement {
         !OkResponseSchema.safeParse(await response.json()).success
       )
         throw new Error("Could not save watch history.");
-      if (this.source !== source) return;
+      if (this.source !== source || this.updatingProgress) return;
       this.watchRecorded = true;
       if (this.player.paused) this.saveProgress(true);
       void this.loadHistory();
@@ -678,7 +764,7 @@ export class VideoApp extends LitElement {
             @canplay=${this.resumePlayback}
             @timeupdate=${() => this.saveProgress()}
             @pause=${() => this.saveProgress(true)}
-            @ended=${() => this.saveProgress(true, true)}
+            @ended=${() => this.saveProgress(true)}
             @error=${this.playbackError}></video>
           <media-playback-rate-menu hidden anchor="auto" @toggle=${this.focusRateMenu}
             rates="0.25 0.5 0.75 1 1.25 1.5 1.75 2"
@@ -759,6 +845,10 @@ export class VideoApp extends LitElement {
 
   private renderHistoryEntry(entry: HistoryEntry) {
     const mp4Available = entry.mp4.sizeBytes !== null;
+    const canMarkWatched =
+      entry.duration !== null &&
+      Number.isFinite(entry.duration) &&
+      entry.duration > 0;
     return html`
       <li class="history-item border-block-start" data-id=${entry.id}>
         <div class="history-details">
@@ -766,9 +856,11 @@ export class VideoApp extends LitElement {
           <span class="history-meta">${entry.channel ?? "Channel unavailable"} · ${durationLabel(entry.duration)}</span>
           <span class="history-time">Watched ${new Date(entry.lastWatchedAt).toLocaleString()}</span>
           ${
-            entry.positionSeconds > 0
-              ? html`<span class="history-time">Continue at ${durationLabel(entry.positionSeconds)}</span>`
-              : ""
+            fullyWatched(entry)
+              ? html`<span class="history-watched">✓ Fully watched</span>`
+              : entry.positionSeconds > 0
+                ? html`<span class="history-time">Continue at ${durationLabel(entry.positionSeconds)}</span>`
+                : ""
           }
           <a class="original-link" href=${entry.url} target="_blank" rel="noopener noreferrer"
             aria-label=${`Open ${entry.title} on YouTube`}>Open on YouTube ↗</a>
@@ -786,6 +878,25 @@ export class VideoApp extends LitElement {
             @click=${() => this.replay(entry)}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#play-icon"></use></svg>
           </button>
+          ${
+            entry.positionSeconds > 0
+              ? html`
+            <button class="plain iconbutton <big>" type="button"
+              aria-label=${`Reset watch progress for ${entry.title}`} title="Reset watch progress"
+              ?disabled=${this.busy} @click=${() => this.setWatchProgress(entry, false)}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#reset-progress-icon"></use></svg>
+            </button>
+          `
+              : html`
+            <button class="plain iconbutton <big>" type="button"
+              aria-label=${`Mark ${entry.title} as fully watched`}
+              title=${canMarkWatched ? "Mark as fully watched" : "Cannot mark as watched: duration unavailable"}
+              ?disabled=${this.busy || !canMarkWatched}
+              @click=${() => this.setWatchProgress(entry, true)}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#mark-watched-icon"></use></svg>
+            </button>
+          `
+          }
           ${
             mp4Available
               ? html`

@@ -151,11 +151,11 @@ test("a saved position is shown and applied after metadata loads", async ({
   await serveFixtureMedia(page);
   await page.route("**/api/history", (route) =>
     route.fulfill({
-      json: [{ ...entry("Fixture video"), positionSeconds: 8 }],
+      json: [{ ...entry("Fixture video"), duration: 120, positionSeconds: 8 }],
     }),
   );
   await page.route("**/api/resolve", (route) =>
-    route.fulfill({ json: { ...video, positionSeconds: 8 } }),
+    route.fulfill({ json: { ...video, duration: 120, positionSeconds: 8 } }),
   );
 
   await page.goto(`/?url=${encodeURIComponent(url)}&mode=mp4`);
@@ -1037,6 +1037,7 @@ for (const mode of ["mp4", "proxy"] as const) {
       route.fulfill({
         json: {
           ...video,
+          duration: 120,
           positionSeconds: 8,
           ...(mode === "proxy"
             ? { kind: "proxy", hls: "/fixture-media/player.m3u8" }
@@ -1134,7 +1135,7 @@ test("copy timestamp links use the playing source, mode and current time without
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/resolve", (route) =>
-    route.fulfill({ json: { ...video, positionSeconds: 5 } }),
+    route.fulfill({ json: { ...video, duration: 120, positionSeconds: 5 } }),
   );
   await page.goto("/");
   const copy = page.getByRole("button", {

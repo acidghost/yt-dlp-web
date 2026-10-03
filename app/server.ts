@@ -362,11 +362,8 @@ export function startServer({
     if (!video || video.id !== id)
       return jsonError("Unknown playback session. Play again.", 404);
 
-    const nearEnd =
-      video.duration !== null &&
-      body.positionSeconds >=
-        video.duration - Math.min(15, video.duration * 0.05);
-    library.progress(id, nearEnd ? 0 : Math.floor(body.positionSeconds));
+    // Keep the final position so the client can derive watched status.
+    library.progress(id, Math.floor(body.positionSeconds));
     return jsonOK();
   }
 
@@ -480,6 +477,27 @@ export function startServer({
         }),
       },
       "/api/history/:id/progress": {
+        PUT: mutationRoute((request) => {
+          const id = request.params.id;
+          if (!validVideoId(id)) return notFound();
+          const video = library.metadata(id);
+          if (!video) return notFound();
+          if (
+            video.duration === null ||
+            !Number.isFinite(video.duration) ||
+            video.duration <= 0
+          )
+            return jsonError("Video duration is unavailable.", 400);
+          // Mark completion using trusted metadata, without a separate watched flag.
+          library.progress(id, video.duration);
+          return jsonOK();
+        }),
+        DELETE: mutationRoute((request) => {
+          const id = request.params.id;
+          if (!validVideoId(id) || !library.metadata(id)) return notFound();
+          library.progress(id, 0);
+          return jsonOK();
+        }),
         POST: mutationRoute(async (request) => {
           const body = await jsonBody(request);
           if ("response" in body) return body.response;

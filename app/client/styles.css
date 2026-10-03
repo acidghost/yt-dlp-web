@@ -388,6 +388,7 @@ main {
 }
 
 .history-details strong,
+.history-watched,
 .history-time {
   display: block;
 }
@@ -397,7 +398,13 @@ main {
   line-height: 1.3;
 }
 
+.history-watched {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .history-time,
+.history-watched,
 .history-meta,
 .original-link {
   font-size: 0.9rem;

@@ -76,8 +76,17 @@ Watch history is saved in SQLite at `DATA_DIR/library.sqlite` (default
 is resolved. History Play reuses the downloaded MP4 when available; otherwise it
 prepares a fresh proxy session. Playback position is saved periodically and on
 pause or when the page is hidden. Preparing the video again seeks to that
-position after metadata loads; reaching the end clears it. History shows the
-resume time when one is saved, along with the original YouTube link, channel
+position after metadata loads. History marks a video **Fully watched** when its
+saved position is within 30 seconds of the end (and greater than zero). This
+status is derived in the browser, not stored separately. Fully watched videos
+start from the beginning when prepared again; explicit timestamp links still
+win. **Reset watch progress** clears the saved position and watched status
+without deleting history or files; for the current video it also pauses and
+returns the player to the beginning. With no saved position, that button becomes
+**Mark as fully watched**, which sets the saved position to the known duration
+without changing files or the watch-history timestamp. It is unavailable when
+duration is unknown. History shows the resume time for unfinished videos, along
+with the original YouTube link, channel
 (when yt-dlp supplies it), duration, watch time, and MP4 file sizes. Sizes and
 availability reflect the files currently on disk, not cached database values.
 Older rows may show “Channel unavailable” until fresh metadata is extracted
