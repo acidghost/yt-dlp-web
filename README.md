@@ -7,9 +7,11 @@ an MP4, with watch history, resume positions, and shareable timestamp links.
 [History & storage](#history-and-storage) · [Configuration](#configuration) ·
 [Deployment](#deployment) · [Development](#development)
 
-> [!IMPORTANT] **There is no login or authentication.** Use this app only on a
-> trusted network or VPN. For remote access, put it behind a private HTTPS
-> ingress; request-origin checks are not authentication.
+> [!IMPORTANT]
+>
+> **There is no login or authentication.** Use this app only on a trusted
+> network or VPN. For remote access, put it behind a private HTTPS ingress;
+> request-origin checks are not authentication.
 
 ## Quick start
 
