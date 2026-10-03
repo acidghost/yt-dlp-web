@@ -1,6 +1,6 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { expect, test } from "playwright/test";
+import { expect, type Page, test } from "playwright/test";
 
 const url = "https://www.youtube.com/watch?v=abcdefghijk";
 const video = {
@@ -25,6 +25,40 @@ const entry = (title: string) => ({
   positionSeconds: 0,
   mp4: { sizeBytes: 10 },
 });
+
+async function serveFixtureMedia(page: Page): Promise<void> {
+  const mediaDir = join(import.meta.dirname, "../tmp/e2e-data/media", video.id);
+  await mkdir(mediaDir, { recursive: true });
+  await copyFile(
+    join(import.meta.dirname, "fixtures/player.mp4"),
+    join(mediaDir, "video.mp4"),
+  );
+  await page.route("**/fixture-media/*", (route) => {
+    const name = new URL(route.request().url()).pathname.split("/").at(-1);
+    if (!name || !/^player(?:-\d+\.mpegts|\.m3u8)$/.test(name))
+      return route.abort();
+    return route.fulfill({
+      path: `${import.meta.dirname}/fixtures/${name}`,
+      contentType: name.endsWith("m3u8")
+        ? "application/vnd.apple.mpegurl"
+        : "video/mp2t",
+    });
+  });
+}
+
+async function loadFixtureMetadata(page: Page): Promise<void> {
+  await expect(page.locator("#status")).toHaveAttribute("data-phase", "ready");
+  await page.locator("video").evaluate((player: HTMLVideoElement) => {
+    // Native sources defer loading until playback; request metadata without playing.
+    if (
+      player.readyState === 0 &&
+      player.getAttribute("src")?.startsWith("/api/stream/")
+    ) {
+      player.preload = "metadata";
+      player.load();
+    }
+  });
+}
 
 test("a late history response cannot replace a newer refresh", async ({
   page,
@@ -114,29 +148,27 @@ test("download mode attaches the saved MP4", async ({ page }) => {
 test("a saved position is shown and applied after metadata loads", async ({
   page,
 }) => {
+  await serveFixtureMedia(page);
   await page.route("**/api/history", (route) =>
-    route.fulfill({ json: [{ ...entry("Long video"), positionSeconds: 83 }] }),
+    route.fulfill({
+      json: [{ ...entry("Fixture video"), positionSeconds: 8 }],
+    }),
   );
   await page.route("**/api/resolve", (route) =>
-    route.fulfill({ json: { ...video, duration: 240, positionSeconds: 83 } }),
+    route.fulfill({ json: { ...video, positionSeconds: 8 } }),
   );
 
   await page.goto(`/?url=${encodeURIComponent(url)}&mode=mp4`);
-  await expect(page.locator("#status")).toContainText("continue at 1:23");
-  await expect(page.locator(".history-item")).toContainText("Continue at 1:23");
-  const seekedTo = await page.locator("video").evaluate((player) => {
-    let position = 0;
-    Object.defineProperty(player, "currentTime", {
-      configurable: true,
-      get: () => position,
-      set: (value: number) => {
-        position = value;
-      },
-    });
-    player.dispatchEvent(new Event("loadedmetadata"));
-    return position;
-  });
-  expect(seekedTo).toBe(83);
+  await loadFixtureMetadata(page);
+  await expect(page.locator("#status")).toContainText("continue at 0:08");
+  await expect(page.locator(".history-item")).toContainText("Continue at 0:08");
+  await expect
+    .poll(() =>
+      page
+        .locator("video")
+        .evaluate((player: HTMLVideoElement) => player.currentTime),
+    )
+    .toBeCloseTo(8, 1);
 });
 
 test("the integrated speed menu tracks video state and owns its keyboard actions", async ({
@@ -527,18 +559,9 @@ for (const mode of ["mp4", "proxy"] as const) {
       progress.push(route.request().postDataJSON());
       return route.fulfill({ json: { ok: true } });
     });
+    await serveFixtureMedia(page);
     if (mode === "mp4") {
       // Use the real server's Range/206 handling, not a full-body 200 mock.
-      const mediaDir = join(
-        import.meta.dirname,
-        "../tmp/e2e-data/media",
-        video.id,
-      );
-      await mkdir(mediaDir, { recursive: true });
-      await copyFile(
-        join(import.meta.dirname, "fixtures/player.mp4"),
-        join(mediaDir, "video.mp4"),
-      );
       const range = await page.request.get(video.stream, {
         headers: { Range: "bytes=0-31" },
       });
@@ -547,17 +570,6 @@ for (const mode of ["mp4", "proxy"] as const) {
       expect(range.headers()["content-range"]).toMatch(/^bytes 0-31\/\d+$/);
       expect((await range.body()).length).toBe(32);
     }
-    await page.route("**/fixture-media/*", (route) => {
-      const name = new URL(route.request().url()).pathname.split("/").at(-1);
-      if (!name || !/^player(?:-\d+\.mpegts|\.m3u8)$/.test(name))
-        return route.abort();
-      return route.fulfill({
-        path: `${import.meta.dirname}/fixtures/${name}`,
-        contentType: name.endsWith("m3u8")
-          ? "application/vnd.apple.mpegurl"
-          : "video/mp2t",
-      });
-    });
     await page.route("**/api/resolve", async (route) => {
       if (holdResolve) await resolveHeld;
       await route.fulfill({
@@ -663,20 +675,28 @@ for (const mode of ["mp4", "proxy"] as const) {
     const mute = controller.locator("media-mute-button");
     await mute.focus();
     await page.keyboard.press("Space");
-    expect(await player.evaluate((el) => (el as HTMLVideoElement).muted)).toBe(
-      true,
-    );
-    // Local slider keys change only volume, not playback or seek position.
-    const volume = controller.locator("media-volume-range input");
-    await volume.focus();
+    await expect
+      .poll(() => player.evaluate((el) => (el as HTMLVideoElement).muted))
+      .toBe(true);
+    // Muting displays zero without changing stored volume. Wait for the slider
+    // to reflect mute before End, then for unmute before the next key.
+    const volumeRange = controller.locator("media-volume-range");
+    const volume = volumeRange.locator("input");
+    await expect(volume).toHaveValue("0");
     await volume.press("End");
+    await expect
+      .poll(() => player.evaluate((el) => (el as HTMLVideoElement).muted))
+      .toBe(false);
+    await expect(volumeRange).not.toHaveAttribute("mediamuted");
+    await expect(volume).toHaveValue("1");
+    // Local slider keys change only volume, not playback or seek position.
     const position = await player.evaluate(
       (el) => (el as HTMLVideoElement).currentTime,
     );
-    await page.keyboard.press("ArrowLeft");
-    expect(
-      await player.evaluate((el) => (el as HTMLVideoElement).volume),
-    ).toBeLessThan(1);
+    await volume.press("ArrowLeft");
+    await expect
+      .poll(() => player.evaluate((el) => (el as HTMLVideoElement).volume))
+      .toBeLessThan(1);
     expect(
       await player.evaluate((el) => (el as HTMLVideoElement).currentTime),
     ).toBe(position);
@@ -846,4 +866,239 @@ test("seek stays above compact controls and joins the action row on larger playe
       }, originalNodes),
     ).toBe(true);
   }
+});
+
+for (const mode of ["mp4", "proxy"] as const) {
+  test(`${mode} timestamp bookmarks override resume without autoplay or watch recording`, async ({
+    page,
+  }) => {
+    await serveFixtureMedia(page);
+    let watched = 0;
+    await page.route("**/api/history", (route) =>
+      route.fulfill({
+        json: [
+          {
+            ...entry("Fixture video"),
+            mp4: { sizeBytes: mode === "mp4" ? 10 : null },
+          },
+        ],
+      }),
+    );
+    await page.route("**/api/history/*/watched", (route) => {
+      watched++;
+      return route.fulfill({ json: { ok: true } });
+    });
+    await page.route("**/api/resolve", (route) =>
+      route.fulfill({
+        json: {
+          ...video,
+          positionSeconds: 8,
+          ...(mode === "proxy"
+            ? { kind: "proxy", hls: "/fixture-media/player.m3u8" }
+            : {}),
+        },
+      }),
+    );
+    for (const [videoUrl, timestamp, expected] of [
+      [url, "3", 3],
+      [`${url}&t=4s`, null, 4],
+      [`${url}&t=4s`, "0", 0],
+      [url, "-1", 8],
+      [url, "999", null],
+    ] as const) {
+      const search = new URLSearchParams({ url: videoUrl, mode });
+      if (timestamp !== null) search.set("t", timestamp);
+      await page.goto(`/?${search}`);
+      const player = page.locator("video");
+      await loadFixtureMetadata(page);
+      await expect
+        .poll(() =>
+          player.evaluate((el: HTMLVideoElement) =>
+            Number.isFinite(el.duration) ? el.duration : 0,
+          ),
+        )
+        .toBeGreaterThan(0);
+      const target =
+        expected ??
+        (await player.evaluate((el: HTMLVideoElement) => el.duration));
+      await expect
+        .poll(() => player.evaluate((el: HTMLVideoElement) => el.currentTime))
+        .toBeCloseTo(target, 1);
+      if (expected === 0)
+        await expect(page.locator("#status")).toHaveText(
+          "Ready. Press play in the video controls.",
+        );
+      expect(await player.evaluate((el: HTMLVideoElement) => el.paused)).toBe(
+        true,
+      );
+      expect(watched).toBe(0);
+    }
+
+    // Editing the URL and replaying history must not reuse a previous link's timestamp.
+    await page.getByLabel("YouTube video URL").fill(`${url}&start=2`);
+    await page
+      .getByRole("button", { name: "Prepare video", exact: true })
+      .click();
+    await expect
+      .poll(() =>
+        page
+          .locator("video")
+          .evaluate((el: HTMLVideoElement) => el.currentTime),
+      )
+      .toBeCloseTo(2, 1);
+    expect(new URL(page.url()).searchParams.get("t")).toBe("2");
+    const originalPlayer = await page.locator("video").elementHandle();
+    await page
+      .getByRole("button", { name: "Play Fixture video", exact: true })
+      .click();
+    await expect
+      .poll(() =>
+        page
+          .locator("video")
+          .evaluate((el: HTMLVideoElement) => el.currentTime),
+      )
+      .toBeCloseTo(8, 1);
+    expect(new URL(page.url()).searchParams.has("t")).toBe(false);
+    expect(
+      await page.evaluate(
+        (original) => document.querySelector("video") === original,
+        originalPlayer,
+      ),
+    ).toBe(true);
+    expect(watched).toBe(0);
+  });
+}
+
+test("copy timestamp links use the playing source, mode and current time without changing playback", async ({
+  page,
+  context,
+}) => {
+  await page.clock.install({ time: new Date("2030-01-01T00:00:00Z") });
+  await serveFixtureMedia(page);
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/resolve", (route) =>
+    route.fulfill({ json: { ...video, positionSeconds: 5 } }),
+  );
+  await page.goto("/");
+  const copy = page.getByRole("button", {
+    name: "Copy timestamp link",
+    exact: true,
+  });
+  await expect(copy).toBeDisabled();
+  await page.goto(`/?url=${encodeURIComponent(url)}&mode=mp4#history-title`);
+  const player = page.locator("video");
+  await loadFixtureMetadata(page);
+  await expect
+    .poll(() => player.evaluate((el: HTMLVideoElement) => el.currentTime))
+    .toBeCloseTo(5, 1);
+  const originalPlayer = await player.elementHandle();
+  const address = page.url();
+  await player.evaluate((el: HTMLVideoElement) => {
+    el.currentTime = 5.75;
+  });
+  await expect
+    .poll(() => player.evaluate((el: HTMLVideoElement) => el.currentTime))
+    .toBeCloseTo(5.75, 1);
+  await page
+    .getByLabel("YouTube video URL")
+    .fill("https://www.youtube.com/watch?v=123456789ab");
+  await page.clock.pauseAt(new Date("2030-01-01T00:10:00Z"));
+  await copy.click();
+  const feedback = page.locator(".timestamp-tools [role='status']");
+  await expect(feedback).toHaveText("Copied");
+  expect(
+    await feedback.evaluate((element) =>
+      Number.parseFloat(getComputedStyle(element).fontSize),
+    ),
+  ).toBeLessThan(
+    await copy.evaluate((element) =>
+      Number.parseFloat(getComputedStyle(element).fontSize),
+    ),
+  );
+  const copied = new URL(
+    await page.evaluate(() => navigator.clipboard.readText()),
+  );
+  expect(copied.origin).toBe(new URL(address).origin);
+  expect(copied.pathname).toBe("/");
+  expect(Object.fromEntries(copied.searchParams)).toEqual({
+    url,
+    mode: "mp4",
+    t: "5",
+  });
+  expect(copied.hash).toBe("");
+  await page.clock.runFor(2999);
+  await expect(feedback).toHaveText("Copied");
+  await copy.click();
+  await expect(feedback).toHaveText("Copied");
+  await page.clock.runFor(2999);
+  await expect(feedback).toHaveText("Copied");
+  await page.clock.runFor(1);
+  await expect(feedback).toBeEmpty();
+  expect(page.url()).toBe(address);
+  expect(
+    await player.evaluate((el: HTMLVideoElement) => el.currentTime),
+  ).toBeCloseTo(5.75, 1);
+  expect(await player.evaluate((el: HTMLVideoElement) => el.paused)).toBe(true);
+  expect(
+    await page.evaluate(
+      (original) => document.querySelector("video") === original,
+      originalPlayer,
+    ),
+  ).toBe(true);
+});
+
+test("clipboard failure leaves a selectable timestamp link and preparation clears it", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText: async () => {
+          throw new Error("Clipboard denied");
+        },
+      },
+    });
+  });
+  await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/resolve", (route) =>
+    route.fulfill({
+      json: { ...video, kind: "proxy", hls: "/fixture-media/player.m3u8" },
+    }),
+  );
+  await serveFixtureMedia(page);
+  await page.goto(`/?url=${encodeURIComponent(url)}&t=3`);
+  await expect
+    .poll(() =>
+      page.locator("video").evaluate((el: HTMLVideoElement) => el.currentTime),
+    )
+    .toBeCloseTo(3, 1);
+  await page
+    .getByRole("button", { name: "Copy timestamp link", exact: true })
+    .click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Copy the link below" }),
+  ).toBeVisible();
+  const fallback = page.getByLabel("Timestamp link", { exact: true });
+  await expect(fallback).toBeVisible();
+  await expect(fallback).toHaveAttribute("readonly");
+  expect(
+    Object.fromEntries(new URL(await fallback.inputValue()).searchParams),
+  ).toEqual({ url, mode: "proxy", t: "3" });
+  await page.setViewportSize({ width: 375, height: 812 });
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(375);
+  await fallback.focus();
+  await page.keyboard.press("KeyK");
+  expect(
+    await page.locator("video").evaluate((el: HTMLVideoElement) => el.paused),
+  ).toBe(true);
+  await page
+    .getByRole("button", { name: "Prepare video", exact: true })
+    .click();
+  await expect(fallback).toHaveCount(0);
+  await expect(
+    page.getByRole("status").filter({ hasText: "Copy the link below" }),
+  ).toHaveCount(0);
 });

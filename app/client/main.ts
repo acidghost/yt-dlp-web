@@ -19,6 +19,7 @@ import {
   type PlayerMode,
   parseHandoff,
   resolveKind,
+  videoStartSeconds,
 } from "./handoff";
 import { controlPlayer } from "./player-keys";
 
@@ -64,11 +65,15 @@ export class VideoApp extends LitElement {
   @state() private showBackToPlayer = false;
   @state() private visibleHistoryCount = HISTORY_CHUNK_SIZE;
   @state() private deleting = false;
+  @state() private copyStatus = "";
+  @state() private copyFallback = "";
+  private copyStatusTimer: number | undefined;
+  private startSeconds: number | undefined;
   private historyRequest = 0;
   private watchedThisPlay = false;
   private watchRecorded = false;
   private hls: Hls | null = null;
-  private pendingResumeSeconds = 0;
+  private pendingResumeSeconds: number | null = null;
   private lastProgressAt = 0;
   private lastProgressSeconds = -1;
   private progressInFlight = false;
@@ -88,7 +93,8 @@ export class VideoApp extends LitElement {
   }
 
   private attachReady(): void {
-    this.pendingResumeSeconds = this.source?.positionSeconds ?? 0;
+    this.pendingResumeSeconds =
+      this.startSeconds ?? this.source?.positionSeconds ?? 0;
     if (this.attachSource()) {
       this.notice = {
         phase: "ready",
@@ -120,6 +126,7 @@ export class VideoApp extends LitElement {
     }
     this.url = handoff.url;
     this.mode = handoff.mode;
+    this.startSeconds = handoff.startSeconds;
     // Prepare the selected source, but never start browser playback automatically.
     void this.prepare(false);
   }
@@ -157,7 +164,8 @@ export class VideoApp extends LitElement {
     if (menu) menu.hidden = true;
     this.watchedThisPlay = false;
     this.watchRecorded = false;
-    this.pendingResumeSeconds = 0;
+    this.pendingResumeSeconds = null;
+    this.resetCopyFeedback();
     this.lastProgressAt = 0;
     this.lastProgressSeconds = -1;
   }
@@ -190,7 +198,9 @@ export class VideoApp extends LitElement {
 
   private updateAddress(): void {
     const url = this.url.trim();
-    const search = url ? `?${handoffSearch(url, this.mode)}` : "";
+    const search = url
+      ? `?${handoffSearch(url, this.mode, this.startSeconds)}`
+      : "";
     window.history.replaceState(
       null,
       "",
@@ -205,6 +215,43 @@ export class VideoApp extends LitElement {
 
   private changeUrl(event: Event): void {
     this.url = (event.currentTarget as HTMLInputElement).value;
+    this.startSeconds = videoStartSeconds(this.url.trim());
+  }
+
+  private resetCopyFeedback(): void {
+    window.clearTimeout(this.copyStatusTimer);
+    this.copyStatusTimer = undefined;
+    this.copyStatus = "";
+    this.copyFallback = "";
+  }
+
+  private async copyTimestampLink(): Promise<void> {
+    const source = this.source;
+    if (!source) return;
+    const seconds = this.player.currentTime;
+    if (!Number.isFinite(seconds) || seconds < 0) return;
+    const link = new URL(window.location.pathname, window.location.origin);
+    link.search = handoffSearch(
+      source.url,
+      source.kind === "download" ? "mp4" : "proxy",
+      Math.floor(seconds),
+    );
+    this.resetCopyFeedback();
+    try {
+      await navigator.clipboard.writeText(link.href);
+      if (this.source !== source || !this.isConnected) return;
+      this.resetCopyFeedback();
+      this.copyStatus = "Copied";
+      this.copyStatusTimer = window.setTimeout(() => {
+        this.copyStatus = "";
+        this.copyStatusTimer = undefined;
+      }, 3000);
+    } catch {
+      if (this.source !== source || !this.isConnected) return;
+      this.resetCopyFeedback();
+      this.copyStatus = "Could not copy. Copy the link below.";
+      this.copyFallback = link.href;
+    }
   }
 
   private async prepare(updateAddress = true): Promise<void> {
@@ -297,6 +344,7 @@ export class VideoApp extends LitElement {
   private replay(entry: HistoryEntry): void {
     if (this.busy) return;
     this.url = entry.url;
+    this.startSeconds = undefined;
     this.mode = entry.mp4.sizeBytes !== null ? "mp4" : "proxy";
     this.focusPlayer();
     void this.prepare();
@@ -382,11 +430,21 @@ export class VideoApp extends LitElement {
   }
 
   private resumePlayback(): void {
-    if (!this.pendingResumeSeconds) return;
+    if (this.pendingResumeSeconds === null) return;
+    const duration = this.player.duration;
+    if (Number.isNaN(duration) || duration <= 0) return;
     const position = this.pendingResumeSeconds;
+    const seconds = Number.isFinite(duration)
+      ? Math.min(position, duration)
+      : position;
     try {
-      this.player.currentTime = position;
-      this.pendingResumeSeconds = 0;
+      this.player.currentTime = seconds;
+      this.pendingResumeSeconds = null;
+      if (seconds !== position && this.notice.phase === "ready")
+        this.notice = {
+          phase: "ready",
+          text: `Ready to continue at ${durationLabel(seconds)}. Press play in the video controls.`,
+        };
     } catch {
       // Some HLS streams do not expose a seekable range immediately.
     }
@@ -515,6 +573,7 @@ export class VideoApp extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    this.resetCopyFeedback();
     window.removeEventListener("scroll", this.updateBackToPlayer);
     window.removeEventListener("resize", this.updateBackToPlayer);
     document.removeEventListener("visibilitychange", this.saveOnHide);
@@ -625,6 +684,18 @@ export class VideoApp extends LitElement {
           Keyboard: <kbd>Space</kbd>/<kbd>K</kbd> play/pause · <kbd>←</kbd>/<kbd>→</kbd> seek 5s
           · <kbd>J</kbd>/<kbd>L</kbd> seek 10s · <kbd>&lt;</kbd>/<kbd>&gt;</kbd> speed · <kbd>M</kbd> mute
         </p>
+        <div class="timestamp-tools tool-bar">
+          <button class="plain <big>" type="button" ?disabled=${!this.source}
+            @click=${this.copyTimestampLink}>Copy timestamp link</button>
+          <span role="status" aria-live="polite">${this.copyStatus}</span>
+          ${
+            this.copyFallback
+              ? html`<label>Timestamp link
+                  <input type="text" readonly .value=${this.copyFallback}>
+                </label>`
+              : nothing
+          }
+        </div>
       </section>
     `;
   }

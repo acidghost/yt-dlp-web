@@ -128,6 +128,7 @@ main {
 
 /* missing.css .iconbutton and .<big> supply the button treatment and 44px targets. */
 .player-controls button,
+.timestamp-tools button,
 .history-actions button {
   min-block-size: 2.75rem;
   justify-content: center;
@@ -316,6 +317,24 @@ main {
   margin: 0.75rem 0 0;
   font-size: 0.9rem;
   line-height: 1.8;
+}
+
+.timestamp-tools {
+  margin-block-start: 0.5rem;
+}
+
+.timestamp-tools [role="status"] {
+  font-size: 0.85rem;
+}
+
+.timestamp-tools label {
+  flex: 1 1 100%;
+  min-inline-size: 0;
+}
+
+.timestamp-tools input {
+  inline-size: 100%;
+  min-inline-size: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

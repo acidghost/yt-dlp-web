@@ -24,6 +24,9 @@ Use the integrated controls for play/pause, seeking, mute/volume, playback speed
 toggles mute. Focused form fields and player controls handle their own keys; `↑`/`↓`
 scroll outside focused sliders and menus.
 
+**Copy timestamp link** copies an app link at the current time, preserving the
+playback mode. If clipboard access is blocked, select and copy the link shown.
+
 Compact players keep seek above the buttons; larger players put it inline.
 **Fill page** expands the player width without entering fullscreen. Controls
 stay visible while using the keyboard or an open speed menu.
@@ -59,6 +62,13 @@ Open a bookmarked URL such as
 to prepare proxy HLS without autoplay. Add `&mode=mp4` to prepare a download
 instead. Replace the example ID with a real public video ID. An
 unknown mode is rejected without contacting the server.
+
+Add `&t=83` to the app link to start at 1:23 instead of the saved resume position;
+`t=0` starts from the beginning. `start=83` and YouTube-style times such as
+`t=1m23s` are also supported, including timestamps inside the YouTube URL.
+The app link's timestamp takes precedence over the YouTube URL's timestamp.
+Invalid timestamps are ignored; times beyond the video duration seek to the end.
+Without a valid timestamp, saved resume behavior is unchanged.
 
 Watch history is saved in SQLite at `DATA_DIR/library.sqlite` (default
 `./data/library.sqlite`) when the video actually starts playing, not when a URL
