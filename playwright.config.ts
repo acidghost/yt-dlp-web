@@ -14,6 +14,11 @@ export default defineConfig({
   webServer: {
     command: "bun app/index.ts",
     url: `http://127.0.0.1:${port}/healthz`,
-    env: { PORT: String(port), DATA_DIR: "tmp/e2e-data" },
+    env: {
+      PORT: String(port),
+      DATA_DIR: "tmp/e2e-data",
+      // Test the deployed client; dev-mode runtime warnings open a Bun overlay.
+      NODE_ENV: "production",
+    },
   },
 });

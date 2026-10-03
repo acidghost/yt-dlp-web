@@ -178,56 +178,163 @@ main {
   margin: 0 0 1rem;
 }
 
-video {
+.player-controller {
+  --media-background-color: #000000;
+  --media-primary-color: #f2eafa;
+  --media-secondary-color: #251b32;
+  --media-control-background: #251b32;
+  --media-control-hover-background: #392b49;
+  --media-font-family: var(--main-font);
+  --media-font-size: 0.9rem;
+  --media-font-weight: 400;
+  --media-control-height: 24px;
+  --media-control-padding: 10px;
+  --media-focus-box-shadow: inset 0 0 0 2px #af87ff;
+  --media-range-bar-color: #af87ff;
+  --media-range-thumb-background: #af87ff;
+  --media-time-range-buffered-color: #bcb0ca;
+  --media-menu-background: #251b32;
+  --media-menu-border-radius: 0.35rem;
+  --media-menu-item-checked-background: #59456b;
+  --media-menu-item-hover-background: #392b49;
+  --media-menu-item-focus-shadow: inset 0 0 0 2px #af87ff;
   display: block;
-  width: 100%;
-  max-height: 70vh;
+  inline-size: 100%;
   aspect-ratio: 16 / 9;
-  object-fit: contain;
-  background: #000;
+  max-block-size: 70vh;
   border-radius: var(--border-radius);
+  color-scheme: dark;
 }
 
-video:focus-visible {
-  outline: 2px solid var(--accent);
+.player-controller > video {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: contain;
+  background: #000000;
+}
+
+/* Draw outside the clipped controller, without changing the video focus target. */
+.player-controller:has(> video:focus-visible) {
+  outline: 2px solid #af87ff;
   outline-offset: 3px;
 }
 
-.player-tools {
-  display: flex;
+.player-controller media-control-bar {
+  background: #251b32;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 1rem;
-  margin-top: 0.75rem;
+}
+
+.player-controller
+  media-control-bar
+  > :not(media-time-range):not(.player-control-spacer) {
+  flex: 0 0 auto;
+}
+
+/* One persistent seek control: a full-width first row on compact players. */
+.player-controller media-time-range {
+  order: -1;
+  flex: 1 0 100%;
+  min-inline-size: 0;
+  min-block-size: 0;
+  --media-range-padding: 10px;
+}
+
+.player-controller media-volume-range {
+  inline-size: 6rem;
+  min-block-size: 0;
+}
+
+/* Media Chrome breakpoints measure the player, including Fill page/fullscreen. */
+.player-controller[breakpointlg] media-control-bar {
+  flex-wrap: nowrap;
+}
+
+.player-controller[breakpointlg] media-time-range {
+  order: 0;
+  flex: 1 1 0;
+}
+
+.player-controller media-time-display {
+  --media-text-color: #bcb0ca;
+  --media-text-content-height: 24px;
+  white-space: nowrap;
+}
+
+.player-controller media-playback-rate-menu::part(menu-item) {
+  min-block-size: 2.75rem;
+}
+
+.player-control-spacer {
+  flex: 1;
+}
+
+.player-controller[breakpointlg] .player-control-spacer {
+  display: none;
+}
+
+.player-controller [disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Keep normal pointer auto-hide, but never hide keyboard focus or an open menu. */
+.player-controller:focus-visible > media-control-bar,
+.player-controller:has(
+    :focus-visible,
+    media-time-range:focus-within,
+    media-volume-range:focus-within
+  )
+  > media-control-bar,
+.player-controller:has(> media-playback-rate-menu:not([hidden]))
+  > media-control-bar,
+.player-controller > media-playback-rate-menu:not([hidden]) {
+  opacity: 1;
+}
+
+.player-controller:not([breakpointmd]) media-volume-range,
+.player-controller media-volume-range[mediavolumeunavailable],
+.player-controller media-fullscreen-button[mediafullscreenunavailable] {
+  display: none;
+}
+
+.wide-player .player-controller {
+  max-block-size: 85vh;
+}
+
+.player-controller:fullscreen,
+.player-controller[mediaisfullscreen] {
+  inline-size: 100%;
+  block-size: 100%;
+  max-block-size: none;
+  aspect-ratio: auto;
+  border-radius: 0;
 }
 
 .player-shortcuts {
-  flex: 1 1 44rem;
-  min-inline-size: 0;
-  margin: 0;
+  margin: 0.75rem 0 0;
   font-size: 0.9rem;
   line-height: 1.8;
 }
 
-.speed-control {
-  /* missing.css sizes selects through this variable, even inside labels. */
-  --input-inline-size-internal: 5rem;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  color: var(--muted-fg);
-  font-size: 0.9rem;
-  white-space: nowrap;
-}
+@media (prefers-reduced-motion: reduce) {
+  .player-controller {
+    --media-control-transition-in: none;
+    --media-control-transition-out: none;
+    --media-menu-transition-in: none;
+    --media-menu-transition-out: none;
+    --media-menu-item-transition: none;
+    --media-range-segment-transition: none;
+    --media-preview-transition-duration-in: 0s;
+    --media-preview-transition-duration-out: 0s;
+    --media-preview-transition-delay-in: 0s;
+    --media-preview-transition-delay-out: 0s;
+  }
 
-.speed-control select {
-  min-block-size: 2.25rem;
-  margin: 0;
-  padding: 0.2rem 0.35rem;
-}
-
-.wide-player video {
-  max-height: 85vh;
+  .player-controller media-control-bar > * {
+    transition: none;
+  }
 }
 
 .history-panel {

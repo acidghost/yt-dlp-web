@@ -1,5 +1,7 @@
 import Hls from "hls.js";
-import { html, LitElement } from "lit";
+import { html, LitElement, nothing } from "lit";
+import "media-chrome";
+import "media-chrome/menu";
 import { customElement, state } from "lit/decorators.js";
 import {
   ApiErrorSchema,
@@ -23,7 +25,6 @@ import { controlPlayer } from "./player-keys";
 type Phase = "idle" | "extracting" | "downloading" | "ready" | "error";
 type Notice = { phase: Phase; text: string };
 const HISTORY_CHUNK_SIZE = 12;
-const PLAYBACK_SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
 function fileSize(bytes: number | null): string {
   if (bytes === null) return "Size unavailable";
@@ -45,7 +46,7 @@ function durationLabel(seconds: number | null): string {
 
 @customElement("video-app")
 export class VideoApp extends LitElement {
-  // Render into light DOM so missing.css styles the controls.
+  // Keep the app in light DOM; Media Chrome styles its own shadow controls.
   override createRenderRoot(): HTMLElement {
     return this;
   }
@@ -60,7 +61,6 @@ export class VideoApp extends LitElement {
   @state() private history: HistoryEntry[] = [];
   @state() private historyError = "";
   @state() private widePlayer = false;
-  @state() private playbackRate = 1;
   @state() private showBackToPlayer = false;
   @state() private visibleHistoryCount = HISTORY_CHUNK_SIZE;
   @state() private deleting = false;
@@ -152,6 +152,9 @@ export class VideoApp extends LitElement {
     this.player.pause();
     this.player.removeAttribute("src");
     this.player.load();
+    // A source reset must not leave an open speed menu over disabled controls.
+    const menu = this.querySelector<HTMLElement>("media-playback-rate-menu");
+    if (menu) menu.hidden = true;
     this.watchedThisPlay = false;
     this.watchRecorded = false;
     this.pendingResumeSeconds = 0;
@@ -434,24 +437,39 @@ export class VideoApp extends LitElement {
     if (document.visibilityState === "hidden") this.saveProgress(true);
   };
 
-  private changePlaybackSpeed(event: Event): void {
-    const rate = Number((event.currentTarget as HTMLSelectElement).value);
-    if (PLAYBACK_SPEEDS.includes(rate)) this.player.playbackRate = rate;
-  }
-
-  private syncPlaybackSpeed(): void {
-    this.playbackRate = this.player.playbackRate;
+  private focusRateMenu(event: Event): void {
+    const menu = event.currentTarget as HTMLElement;
+    if (event.target !== menu || menu.hidden) return;
+    // 4.19.2 focuses on transitionend. Disabled or coalesced transitions never
+    // emit it; complete that handoff and consume its once-listener ourselves.
+    if (menu.getAnimations().length === 0)
+      menu.dispatchEvent(
+        new TransitionEvent("transitionend", { propertyName: "opacity" }),
+      );
   }
 
   private readonly handlePlayerKey = (event: KeyboardEvent): void => {
-    if (!this.source || event.altKey || event.ctrlKey || event.metaKey) return;
-    const target = event.target;
     if (
-      target instanceof Element &&
-      (target.closest(
-        "input, textarea, select, button, a, [contenteditable], [role='textbox'], [role='slider']",
-      ) ||
-        (target as HTMLElement).isContentEditable)
+      !this.source ||
+      event.defaultPrevented ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey
+    )
+      return;
+    // event.target is retargeted at shadow boundaries. Let buttons, ranges and
+    // menus own their keys even when their internal input is hidden from target.
+    if (
+      event
+        .composedPath()
+        .some(
+          (target) =>
+            target instanceof Element &&
+            (target.closest(
+              "input, textarea, select, button, a, [contenteditable], [role='button'], [role='textbox'], [role='slider'], [role='menu'], [role^='menuitem'], [role='listbox'], [role='option'], [role='combobox']",
+            ) ||
+              (target as HTMLElement).isContentEditable),
+        )
     )
       return;
 
@@ -521,10 +539,6 @@ export class VideoApp extends LitElement {
 
   override updated(): void {
     this.updateBackToPlayer();
-    const speed = this.querySelector<HTMLSelectElement>(
-      ".speed-control select",
-    );
-    if (speed) speed.value = String(this.playbackRate);
   }
 
   private renderPlayer() {
@@ -576,27 +590,41 @@ export class VideoApp extends LitElement {
           <p class="video-meta">${this.source.channel ? html`${this.source.channel} · ` : ""}${durationLabel(this.source.duration)}</p>`
             : ""
         }
-        <!-- biome-ignore lint/a11y/useMediaCaption: Captions are not extracted in this app. -->
-        <video id="player" controls playsinline preload="none" tabindex="0" aria-label="Video player"
-          @play=${this.startedPlay} @playing=${this.playing} @loadedmetadata=${this.resumePlayback}
-          @canplay=${this.resumePlayback} @ratechange=${this.syncPlaybackSpeed}
-          @timeupdate=${() => this.saveProgress()}
-          @pause=${() => this.saveProgress(true)}
-          @ended=${() => this.saveProgress(true, true)}
-          @error=${this.playbackError}></video>
-        <div class="player-tools">
-          <p class="hint player-shortcuts">
-            Keyboard: <kbd>Space</kbd>/<kbd>K</kbd> play/pause · <kbd>←</kbd>/<kbd>→</kbd> seek 5s
-            · <kbd>J</kbd>/<kbd>L</kbd> seek 10s · <kbd>&lt;</kbd>/<kbd>&gt;</kbd> speed · <kbd>M</kbd> mute
-          </p>
-          <label class="speed-control">Speed
-            <select aria-label="Playback speed"
-              @change=${this.changePlaybackSpeed} ?disabled=${!this.source}>
-              ${PLAYBACK_SPEEDS.map((rate) => html`<option value=${rate}>${rate}×</option>`)}
-              ${PLAYBACK_SPEEDS.includes(this.playbackRate) ? "" : html`<option value=${this.playbackRate}>${this.playbackRate}×</option>`}
-            </select>
-          </label>
-        </div>
+        <media-controller class="player-controller" nohotkeys novolumepref nomutedpref
+          defaultstreamtype="on-demand" ?gesturesdisabled=${!this.source}>
+          <!-- biome-ignore lint/a11y/useMediaCaption: Captions are not extracted in this app. -->
+          <video id="player" slot="media" playsinline preload="none" tabindex="0" aria-label="Video player"
+            @play=${this.startedPlay} @playing=${this.playing} @loadedmetadata=${this.resumePlayback}
+            @canplay=${this.resumePlayback}
+            @timeupdate=${() => this.saveProgress()}
+            @pause=${() => this.saveProgress(true)}
+            @ended=${() => this.saveProgress(true, true)}
+            @error=${this.playbackError}></video>
+          <media-playback-rate-menu hidden anchor="auto" @toggle=${this.focusRateMenu}
+            rates="0.25 0.5 0.75 1 1.25 1.5 1.75 2"
+            ?disabled=${!this.source} aria-disabled=${this.source ? nothing : "true"}>
+          </media-playback-rate-menu>
+          <media-control-bar class="player-actions">
+            <!-- 4.19.2 tooltip setup reattaches disabled button click listeners. -->
+            <media-play-button .preventClick=${!this.source} ?disabled=${!this.source}
+              aria-disabled=${this.source ? nothing : "true"}></media-play-button>
+            <media-mute-button .preventClick=${!this.source} ?disabled=${!this.source}
+              aria-disabled=${this.source ? nothing : "true"}></media-mute-button>
+            <media-volume-range ?disabled=${!this.source}
+              aria-disabled=${this.source ? nothing : "true"}></media-volume-range>
+            <media-time-range ?disabled=${!this.source}
+              aria-disabled=${this.source ? nothing : "true"}></media-time-range>
+            <media-time-display showduration notoggle></media-time-display>
+            <span class="player-control-spacer"></span>
+            <media-playback-rate-menu-button .preventClick=${!this.source} ?disabled=${!this.source}
+              aria-disabled=${this.source ? nothing : "true"}></media-playback-rate-menu-button>
+            <media-fullscreen-button></media-fullscreen-button>
+          </media-control-bar>
+        </media-controller>
+        <p class="hint player-shortcuts">
+          Keyboard: <kbd>Space</kbd>/<kbd>K</kbd> play/pause · <kbd>←</kbd>/<kbd>→</kbd> seek 5s
+          · <kbd>J</kbd>/<kbd>L</kbd> seek 10s · <kbd>&lt;</kbd>/<kbd>&gt;</kbd> speed · <kbd>M</kbd> mute
+        </p>
       </section>
     `;
   }

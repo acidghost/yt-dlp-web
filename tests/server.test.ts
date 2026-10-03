@@ -270,7 +270,16 @@ test("bundles the player and its assets", async () => {
   const bundled = await fetch(new URL(scriptUrl, base));
   expect(bundled.status).toBe(200);
   const client = await bundled.text();
+  if (process.env.NODE_ENV === "production") {
+    expect(html).not.toContain("bun-hmr");
+    expect(client).not.toContain("bun-hmr");
+  }
   expect(client).toContain("Hls");
+  // Registration code must ship, not just custom-element tags in Lit templates.
+  expect(client).toMatch(/customElements\.define\(\s*["']media-controller["']/);
+  expect(client).toMatch(
+    /customElements\.define\(\s*["']media-playback-rate-menu["']/,
+  );
   expect(client).toContain("Proxy YouTube HLS");
   expect(client).toContain("Download + Native MP4");
   expect(client).toContain("Delete files and history");

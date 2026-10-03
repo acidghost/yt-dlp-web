@@ -1,3 +1,5 @@
+import { copyFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { expect, test } from "playwright/test";
 
 const url = "https://www.youtube.com/watch?v=abcdefghijk";
@@ -137,76 +139,102 @@ test("a saved position is shown and applied after metadata loads", async ({
   expect(seekedTo).toBe(83);
 });
 
-test("the compact speed selector sits beside shortcut help and stays in sync", async ({
+test("the integrated speed menu tracks video state and owns its keyboard actions", async ({
   page,
 }) => {
   await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/resolve", (route) => route.fulfill({ json: video }));
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/");
+  await page.goto(`/?url=${encodeURIComponent(url)}&mode=mp4`);
 
   const player = page.locator("video");
-  const speed = page.getByRole("combobox", { name: "Playback speed" });
-  await expect(speed).toBeDisabled();
-  await page.getByLabel("YouTube video URL").fill(url);
-  await page.getByLabel("Playback mode").selectOption("mp4");
-  await page.getByRole("button", { name: "Prepare video" }).click();
-  await expect(speed).toBeEnabled();
-  await expect(speed).toHaveValue("1");
-  const videoBounds = await player.boundingBox();
-  const helpBounds = await page.locator(".player-shortcuts").boundingBox();
-  const controlBounds = await speed.boundingBox();
-  expect(videoBounds).not.toBeNull();
-  expect(helpBounds).not.toBeNull();
-  expect(controlBounds).not.toBeNull();
-  expect(controlBounds?.width).toBeLessThan(110);
-  expect(controlBounds?.y).toBeGreaterThanOrEqual(
-    (videoBounds?.y ?? 0) + (videoBounds?.height ?? 0),
-  );
-  expect(controlBounds?.x).toBeGreaterThan(
-    (helpBounds?.x ?? 0) + (helpBounds?.width ?? 0),
-  );
+  const controller = page.locator("media-controller");
+  const originalController = await controller.elementHandle();
+  const originalVideo = await player.elementHandle();
+  const speed = page.locator("media-playback-rate-menu-button");
+  const menu = page.locator("media-playback-rate-menu");
+  // Exercise the deployed bundle, not Bun's development error overlay.
+  await expect(page.locator("bun-hmr")).toHaveCount(0);
+  await expect(speed).toHaveAttribute("mediaplaybackrate", "1");
+  await expect(player).not.toHaveAttribute("controls");
+  await expect(page.locator(".speed-control")).toHaveCount(0);
+  await speed.click();
+  await expect(menu).not.toHaveAttribute("hidden");
+  await expect(
+    menu.getByRole("menuitemradio", { name: "0.25x", exact: true }),
+  ).toBeFocused();
+  await menu.getByRole("menuitemradio", { name: "1.5x", exact: true }).click();
+  await expect(menu).toHaveAttribute("hidden");
+  await expect(speed).toHaveAttribute("mediaplaybackrate", "1.5");
   expect(
-    Math.abs(
-      (controlBounds?.y ?? 0) +
-        (controlBounds?.height ?? 0) / 2 -
-        (helpBounds?.y ?? 0) -
-        (helpBounds?.height ?? 0) / 2,
-    ),
-  ).toBeLessThan(3);
-
-  await speed.selectOption("1.5");
-  expect(
-    await player.evaluate(
-      (element) => (element as HTMLVideoElement).playbackRate,
-    ),
+    await player.evaluate((el) => (el as HTMLVideoElement).playbackRate),
   ).toBe(1.5);
+
   await speed.focus();
   await page.keyboard.press("Shift+Period");
   expect(
-    await player.evaluate(
-      (element) => (element as HTMLVideoElement).playbackRate,
-    ),
+    await player.evaluate((el) => (el as HTMLVideoElement).playbackRate),
   ).toBe(1.5);
   await player.focus();
   await page.keyboard.press("Shift+Period");
-  await expect(speed).toHaveValue("1.75");
-  await player.evaluate((element) => {
-    (element as HTMLVideoElement).playbackRate = 0.75;
+  await expect(speed).toHaveAttribute("mediaplaybackrate", "1.75");
+  await player.evaluate((el) => {
+    (el as HTMLVideoElement).playbackRate = 1.1;
   });
-  await expect(speed).toHaveValue("0.75");
-  await player.evaluate((element) => {
-    (element as HTMLVideoElement).playbackRate = 1.1;
+  await expect(speed).toHaveAttribute("mediaplaybackrate", "1.1");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await speed.focus();
+  await page.keyboard.press("Enter");
+  await expect(
+    menu.getByRole("menuitemradio", { name: "0.25x", exact: true }),
+  ).toBeFocused();
+  const currentRate = menu.getByRole("menuitemradio", {
+    name: "1.1x",
+    exact: true,
   });
-  await expect(speed).toHaveValue("1.1");
+  await expect(currentRate).toHaveAttribute("aria-checked", "true");
+  await currentRate.focus();
+  await page.keyboard.press("ArrowDown");
+  const nextRate = menu.getByRole("menuitemradio", {
+    name: "1.25x",
+    exact: true,
+  });
+  await expect(nextRate).toBeFocused();
+  // No sleeps: fast close/reopen can coalesce styles and skip transitionend.
+  for (const key of ["Space", "Enter", "Space"]) {
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveAttribute("hidden");
+    await expect(speed).toBeFocused();
+    await page.keyboard.press(key);
+    await expect(menu).not.toHaveAttribute("hidden");
+    await expect(
+      menu.getByRole("menuitemradio", { name: "0.25x", exact: true }),
+    ).toBeFocused();
+  }
+  await nextRate.focus();
+  await page.keyboard.press("Space");
+  await expect(speed).toHaveAttribute("mediaplaybackrate", "1.25");
+  await expect(menu).toHaveAttribute("hidden");
+  expect(await player.evaluate((el) => (el as HTMLVideoElement).paused)).toBe(
+    true,
+  );
 
   await page.getByRole("button", { name: "Fill page" }).click();
-  await expect(speed).toHaveValue("1.1");
   expect(
-    await player.evaluate(
-      (element) => (element as HTMLVideoElement).playbackRate,
+    await controller.evaluate(
+      (el, original) => el === original,
+      originalController,
     ),
-  ).toBe(1.1);
+  ).toBe(true);
+  expect(
+    await player.evaluate((el, original) => el === original, originalVideo),
+  ).toBe(true);
+  await expect(speed).toHaveAttribute("mediaplaybackrate", "1.25");
+  const bounds = await controller.boundingBox();
+  const speedBounds = await speed.boundingBox();
+  expect(speedBounds?.y).toBeGreaterThan(bounds?.y ?? 0);
+  expect(
+    (speedBounds?.y ?? 0) + (speedBounds?.height ?? 0),
+  ).toBeLessThanOrEqual((bounds?.y ?? 0) + (bounds?.height ?? 0) + 1);
 });
 
 test("keyboard shortcuts control a prepared player without hijacking form controls", async ({
@@ -392,7 +420,10 @@ test("theater width and history chunks keep the player in place", async ({
       .locator("#player")
       .evaluate((element) => element.matches(":target")),
   ).toBe(false);
-  await expect(page.locator("#player")).toHaveCSS("outline-style", "none");
+  await expect(page.locator("media-controller")).toHaveCSS(
+    "outline-style",
+    "none",
+  );
   expect(
     await page.evaluate(
       (original) => document.querySelector("video") === original,
@@ -416,10 +447,403 @@ test("theater width and history chunks keep the player in place", async ({
   await expect(backToPlayer).toHaveCount(0);
   await expect(page).toHaveURL(originalUrl);
   expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
-  await expect(page.locator("#player")).toHaveCSS("outline-style", "solid");
+  await expect(page.locator("media-controller")).toHaveCSS(
+    "outline-style",
+    "solid",
+  );
 
   await page.setViewportSize({ width: 375, height: 812 });
   expect(
     await page.evaluate(() => document.documentElement.scrollWidth),
   ).toBeLessThanOrEqual(375);
+});
+
+test("source-less controls are disabled functionally and accessibly", async ({
+  page,
+}) => {
+  await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
+  await page.goto("/");
+  const controller = page.locator("media-controller");
+  await expect(controller).toHaveAttribute("gesturesdisabled");
+  await expect(controller).toHaveAttribute("nohotkeys");
+  await expect(controller).toHaveAttribute("novolumepref");
+  await expect(controller).toHaveAttribute("nomutedpref");
+  for (const tag of [
+    "media-play-button",
+    "media-mute-button",
+    "media-playback-rate-menu-button",
+    "media-time-range",
+    "media-volume-range",
+  ]) {
+    const control = controller.locator(tag);
+    await expect(control).toHaveAttribute("disabled");
+    await expect(control).toHaveAttribute("aria-disabled", "true");
+  }
+  for (const tag of ["media-time-range", "media-volume-range"]) {
+    await expect(controller.locator(`${tag} input`)).toBeDisabled();
+  }
+  await expect(
+    controller.locator("media-fullscreen-button"),
+  ).not.toHaveAttribute("disabled");
+  await controller.locator("media-play-button").dispatchEvent("click");
+  await controller.locator("media-mute-button").dispatchEvent("click");
+  expect(
+    await page
+      .locator("video")
+      .evaluate((el) => (el as HTMLVideoElement).muted),
+  ).toBe(false);
+  await controller
+    .locator("media-playback-rate-menu-button")
+    .dispatchEvent("click");
+  await expect(controller.locator("media-playback-rate-menu")).toHaveAttribute(
+    "hidden",
+  );
+  expect(
+    await page
+      .locator("video")
+      .evaluate((el) => (el as HTMLVideoElement).paused),
+  ).toBe(true);
+});
+
+for (const mode of ["mp4", "proxy"] as const) {
+  test(`${mode} playback uses real control events, records history, seeks and saves progress`, async ({
+    page,
+  }) => {
+    const watched: unknown[] = [];
+    const progress: { positionSeconds: number }[] = [];
+    let holdResolve = false;
+    let releaseResolve: (() => void) | undefined;
+    const resolveHeld = new Promise<void>((resolve) => {
+      releaseResolve = resolve;
+    });
+    await page.route("**/api/history", (route) =>
+      route.fulfill({ json: watched.length ? [entry("Fixture video")] : [] }),
+    );
+    await page.route("**/api/history/*/watched", (route) => {
+      watched.push(route.request().postDataJSON());
+      return route.fulfill({ json: { ok: true } });
+    });
+    await page.route("**/api/history/*/progress", (route) => {
+      progress.push(route.request().postDataJSON());
+      return route.fulfill({ json: { ok: true } });
+    });
+    if (mode === "mp4") {
+      // Use the real server's Range/206 handling, not a full-body 200 mock.
+      const mediaDir = join(
+        import.meta.dirname,
+        "../tmp/e2e-data/media",
+        video.id,
+      );
+      await mkdir(mediaDir, { recursive: true });
+      await copyFile(
+        join(import.meta.dirname, "fixtures/player.mp4"),
+        join(mediaDir, "video.mp4"),
+      );
+      const range = await page.request.get(video.stream, {
+        headers: { Range: "bytes=0-31" },
+      });
+      expect(range.status()).toBe(206);
+      expect(range.headers()["accept-ranges"]).toBe("bytes");
+      expect(range.headers()["content-range"]).toMatch(/^bytes 0-31\/\d+$/);
+      expect((await range.body()).length).toBe(32);
+    }
+    await page.route("**/fixture-media/*", (route) => {
+      const name = new URL(route.request().url()).pathname.split("/").at(-1);
+      if (!name || !/^player(?:-\d+\.mpegts|\.m3u8)$/.test(name))
+        return route.abort();
+      return route.fulfill({
+        path: `${import.meta.dirname}/fixtures/${name}`,
+        contentType: name.endsWith("m3u8")
+          ? "application/vnd.apple.mpegurl"
+          : "video/mp2t",
+      });
+    });
+    await page.route("**/api/resolve", async (route) => {
+      if (holdResolve) await resolveHeld;
+      await route.fulfill({
+        json:
+          mode === "mp4"
+            ? video
+            : {
+                ...video,
+                kind: "proxy",
+                hls: "/fixture-media/player.m3u8",
+              },
+      });
+    });
+    await page.goto(`/?url=${encodeURIComponent(url)}&mode=${mode}`);
+    const player = page.locator("video");
+    const controller = page.locator("media-controller");
+    const originalController = await controller.elementHandle();
+    const originalVideo = await player.elementHandle();
+    const play = controller.locator("media-play-button");
+    await expect(play).not.toHaveAttribute("disabled");
+    expect(await player.evaluate((el) => (el as HTMLVideoElement).paused)).toBe(
+      true,
+    );
+    await play.focus();
+    await page.keyboard.press("Space");
+    await expect
+      .poll(() => player.evaluate((el) => (el as HTMLVideoElement).currentTime))
+      .toBeGreaterThan(0);
+    await expect.poll(() => watched.length).toBe(1);
+    await expect(page.locator(".history-item")).toContainText("Fixture video");
+    expect(
+      await controller.evaluate(
+        (el, original) => el === original,
+        originalController,
+      ),
+    ).toBe(true);
+    expect(
+      await player.evaluate((el, original) => el === original, originalVideo),
+    ).toBe(true);
+    // Focused controls must stay visible beyond the normal two-second idle timeout.
+    await page.waitForTimeout(2500);
+    await expect(controller.locator(".player-actions")).toHaveCSS(
+      "opacity",
+      "1",
+    );
+    await page.keyboard.press("Space");
+    await expect
+      .poll(() => player.evaluate((el) => (el as HTMLVideoElement).paused))
+      .toBe(true);
+    const seek = controller.locator("media-time-range input");
+    await expect(seek).toBeEnabled();
+    // Seekability must come from the served media, not API metadata.
+    await expect
+      .poll(() =>
+        player.evaluate((el) => {
+          const video = el as HTMLVideoElement;
+          return video.seekable.length
+            ? video.seekable.end(video.seekable.length - 1)
+            : 0;
+        }),
+      )
+      .toBeGreaterThan(10);
+    const seekBounds = await seek.boundingBox();
+    if (!seekBounds) throw new Error("Missing seek input bounds");
+    await seek.click({
+      position: { x: seekBounds.width / 2, y: seekBounds.height / 2 },
+    });
+    await seek.press("ArrowRight");
+    await expect
+      .poll(() => player.evaluate((el) => (el as HTMLVideoElement).currentTime))
+      .toBeGreaterThan(5);
+    // A duplicate global ArrowRight would add five seconds, not a slider step.
+    expect(
+      await player.evaluate((el) => (el as HTMLVideoElement).currentTime),
+    ).toBeLessThan(7);
+    expect(await player.evaluate((el) => (el as HTMLVideoElement).paused)).toBe(
+      true,
+    );
+    await expect
+      .poll(async () =>
+        Number(
+          await controller
+            .locator("media-time-display")
+            .getAttribute("mediaduration"),
+        ),
+      )
+      .toBeCloseTo(12, 0);
+    await seek.hover();
+    await expect(controller.locator("media-time-range")).toHaveAttribute(
+      "mediapreviewtime",
+      /\d/,
+    );
+    // Force a pause-save after seeking (time updates are deliberately throttled).
+    await play.click();
+    await expect
+      .poll(() => player.evaluate((el) => (el as HTMLVideoElement).paused))
+      .toBe(false);
+    await play.click();
+    await expect
+      .poll(() => progress.some((item) => item.positionSeconds >= 5))
+      .toBe(true);
+
+    const mute = controller.locator("media-mute-button");
+    await mute.focus();
+    await page.keyboard.press("Space");
+    expect(await player.evaluate((el) => (el as HTMLVideoElement).muted)).toBe(
+      true,
+    );
+    // Local slider keys change only volume, not playback or seek position.
+    const volume = controller.locator("media-volume-range input");
+    await volume.focus();
+    await volume.press("End");
+    const position = await player.evaluate(
+      (el) => (el as HTMLVideoElement).currentTime,
+    );
+    await page.keyboard.press("ArrowLeft");
+    expect(
+      await player.evaluate((el) => (el as HTMLVideoElement).volume),
+    ).toBeLessThan(1);
+    expect(
+      await player.evaluate((el) => (el as HTMLVideoElement).currentTime),
+    ).toBe(position);
+    await player.focus();
+    await player.evaluate((el) =>
+      el.addEventListener("keydown", (event) => event.preventDefault(), {
+        once: true,
+      }),
+    );
+    await page.keyboard.press("KeyM");
+    expect(await player.evaluate((el) => (el as HTMLVideoElement).muted)).toBe(
+      false,
+    );
+
+    // Fullscreen targets the controller, not the native video, so menus come along.
+    if (await page.evaluate(() => document.fullscreenEnabled)) {
+      await controller.locator("media-fullscreen-button").click();
+      await expect
+        .poll(() =>
+          controller.evaluate((el) => document.fullscreenElement === el),
+        )
+        .toBe(true);
+      await controller.locator("media-playback-rate-menu-button").click();
+      const fullscreenMenu = controller.locator("media-playback-rate-menu");
+      await expect(
+        fullscreenMenu.getByRole("menuitemradio", {
+          name: "0.25x",
+          exact: true,
+        }),
+      ).toBeFocused();
+      await fullscreenMenu
+        .getByRole("menuitemradio", { name: "1.5x", exact: true })
+        .click();
+      expect(
+        await player.evaluate((el) => (el as HTMLVideoElement).playbackRate),
+      ).toBe(1.5);
+      await controller.locator("media-fullscreen-button").click();
+      await expect
+        .poll(() => page.evaluate(() => document.fullscreenElement))
+        .toBeNull();
+    }
+    // Source changes retain both nodes and clear an open menu during preparation.
+    holdResolve = true;
+    await controller.locator("media-playback-rate-menu-button").click();
+    await page.getByRole("button", { name: "Prepare video" }).click();
+    await expect(controller).toHaveAttribute("gesturesdisabled");
+    await expect(play).toHaveAttribute("disabled");
+    await expect(play).toHaveAttribute("aria-disabled", "true");
+    await expect(seek).toBeDisabled();
+    await expect(
+      controller.locator("media-playback-rate-menu"),
+    ).toHaveAttribute("hidden");
+    releaseResolve?.();
+    await expect(page.locator("#status")).toHaveAttribute(
+      "data-phase",
+      "ready",
+    );
+    await expect(
+      controller.locator("media-playback-rate-menu"),
+    ).toHaveAttribute("hidden");
+    expect(
+      await controller.evaluate(
+        (el, original) => el === original,
+        originalController,
+      ),
+    ).toBe(true);
+    expect(
+      await player.evaluate((el, original) => el === original, originalVideo),
+    ).toBe(true);
+    expect(await player.evaluate((el) => (el as HTMLVideoElement).paused)).toBe(
+      true,
+    );
+  });
+}
+
+test("compact and landscape player controls stay attached without overflow", async ({
+  page,
+}) => {
+  await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/resolve", (route) => route.fulfill({ json: video }));
+  await page.goto(`/?url=${encodeURIComponent(url)}&mode=mp4`);
+  for (const viewport of [
+    { width: 375, height: 812 },
+    { width: 812, height: 375 },
+    { width: 1800, height: 700 },
+  ]) {
+    await page.setViewportSize(viewport);
+    const controller = page.locator("media-controller");
+    await controller.locator("media-playback-rate-menu-button").click();
+    const menu = controller.locator("media-playback-rate-menu");
+    await expect(menu).not.toHaveAttribute("hidden");
+    await expect(
+      menu.getByRole("menuitemradio", { name: "0.25x", exact: true }),
+    ).toBeFocused();
+    const frame = await controller.boundingBox();
+    const menuBounds = await menu.boundingBox();
+    expect(menuBounds?.x).toBeGreaterThanOrEqual(frame?.x ?? 0);
+    expect(menuBounds?.y).toBeGreaterThanOrEqual(frame?.y ?? 0);
+    expect((menuBounds?.x ?? 0) + (menuBounds?.width ?? 0)).toBeLessThanOrEqual(
+      (frame?.x ?? 0) + (frame?.width ?? 0) + 1,
+    );
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(viewport.width);
+    if (viewport.width === 375)
+      await expect(controller.locator("media-volume-range")).toBeHidden();
+    await page.keyboard.press("Escape");
+  }
+});
+
+test("seek stays above compact controls and joins the action row on larger players", async ({
+  page,
+}) => {
+  await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/resolve", (route) => route.fulfill({ json: video }));
+  await page.goto(`/?url=${encodeURIComponent(url)}&mode=mp4`);
+  const controller = page.locator("media-controller");
+  const originalNodes = await page
+    .locator("media-controller, #player, media-time-range")
+    .elementHandles();
+
+  for (const width of [375, 800, 820, 1440, 375]) {
+    await page.setViewportSize({ width, height: 900 });
+    const inline = width >= 820;
+    if (inline) await expect(controller).toHaveAttribute("breakpointlg");
+    else await expect(controller).not.toHaveAttribute("breakpointlg");
+    const bounds = await controller.evaluate((element) => {
+      const rect = (selector: string) => {
+        const control = element.querySelector(selector);
+        if (!control) throw new Error(`Missing ${selector}`);
+        const { x, y, width, height, right, bottom } =
+          control.getBoundingClientRect();
+        return { x, y, width, height, right, bottom };
+      };
+      return {
+        frame: element.getBoundingClientRect().toJSON(),
+        seek: rect("media-time-range"),
+        play: rect("media-play-button"),
+        volume: rect("media-volume-range"),
+        time: rect("media-time-display"),
+        speed: rect("media-playback-rate-menu-button"),
+        fullscreen: rect("media-fullscreen-button"),
+      };
+    });
+    expect(bounds.time.y).toBeCloseTo(bounds.play.y, 0);
+    expect(bounds.speed.y).toBeCloseTo(bounds.play.y, 0);
+    expect(bounds.fullscreen.y).toBeCloseTo(bounds.play.y, 0);
+    if (inline) {
+      expect(bounds.seek.y).toBeCloseTo(bounds.play.y, 0);
+      expect(bounds.seek.x).toBeGreaterThanOrEqual(bounds.volume.right - 1);
+      expect(bounds.seek.right).toBeLessThanOrEqual(bounds.time.x + 1);
+      expect(bounds.seek.width).toBeGreaterThan(bounds.frame.width * 0.4);
+    } else {
+      expect(bounds.seek.bottom).toBeCloseTo(bounds.play.y, 0);
+      expect(bounds.seek.x).toBeCloseTo(bounds.frame.x, 0);
+      expect(bounds.seek.width).toBeCloseTo(bounds.frame.width, 0);
+    }
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(width);
+    expect(
+      await page.evaluate((originals) => {
+        const nodes = document.querySelectorAll(
+          "media-controller, #player, media-time-range",
+        );
+        return originals.every((original, index) => nodes[index] === original);
+      }, originalNodes),
+    ).toBe(true);
+  }
 });
