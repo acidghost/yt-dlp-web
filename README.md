@@ -20,7 +20,8 @@ via `Bun.serve` routes.
 
 Use the integrated controls for play/pause, seeking, mute/volume, playback speed
 (0.25–2×), and fullscreen. Keyboard shortcuts: `Space`/`K` play/pause,
-`←`/`→` seek 5 seconds, `J`/`L` seek 10 seconds, `<`/`>` change speed, and `M`
+`←`/`→` seek 5 seconds, `J`/`L` seek 10 seconds, `<`/`>` change speed, `F`
+toggles fullscreen, and `M`
 toggles mute. Focused form fields and player controls handle their own keys; `↑`/`↓`
 scroll outside focused sliders and menus.
 

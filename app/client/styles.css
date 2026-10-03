@@ -280,10 +280,10 @@ main {
   cursor: default;
 }
 
-/* Keep normal pointer auto-hide, but never hide keyboard focus or an open menu. */
+/* Keep auto-hide with video focus, but never hide focused controls or an open menu. */
 .player-controller:focus-visible > media-control-bar,
 .player-controller:has(
-    :focus-visible,
+    media-control-bar :focus-visible,
     media-time-range:focus-within,
     media-volume-range:focus-within
   )

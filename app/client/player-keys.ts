@@ -2,6 +2,7 @@
 export function controlPlayer(
   player: HTMLVideoElement,
   event: KeyboardEvent,
+  toggleFullscreen?: () => void,
 ): boolean {
   const seek = (seconds: number): boolean => {
     const range = player.seekable;
@@ -40,6 +41,11 @@ export function controlPlayer(
       return true;
     case ">":
       player.playbackRate = Math.min(2, player.playbackRate + 0.25);
+      return true;
+    case "f":
+    case "F":
+      if (!toggleFullscreen) return false;
+      if (!event.repeat) toggleFullscreen();
       return true;
     case "m":
     case "M":

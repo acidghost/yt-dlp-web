@@ -506,6 +506,11 @@ export class VideoApp extends LitElement {
       );
   }
 
+  private readonly toggleFullscreen = (): void => {
+    // Reuse the control's fullscreen target and browser fallbacks.
+    this.querySelector<HTMLElement>("media-fullscreen-button")?.click();
+  };
+
   private handleSeekKey(event: KeyboardEvent): void {
     if (
       !this.source ||
@@ -517,7 +522,8 @@ export class VideoApp extends LitElement {
       return;
     // Keep all player shortcuts available while the seek slider is focused.
     // Prevent native range steps for handled keys; leave Home/End alone.
-    if (controlPlayer(this.player, event)) event.preventDefault();
+    if (controlPlayer(this.player, event, this.toggleFullscreen))
+      event.preventDefault();
   }
 
   private readonly handlePlayerKey = (event: KeyboardEvent): void => {
@@ -545,7 +551,8 @@ export class VideoApp extends LitElement {
     )
       return;
 
-    if (controlPlayer(this.player, event)) event.preventDefault();
+    if (controlPlayer(this.player, event, this.toggleFullscreen))
+      event.preventDefault();
   };
 
   private async playing(): Promise<void> {
@@ -698,6 +705,7 @@ export class VideoApp extends LitElement {
         <p class="hint player-shortcuts">
           Keyboard: <kbd>Space</kbd>/<kbd>K</kbd> play/pause · <kbd>←</kbd>/<kbd>→</kbd> seek 5s
           · <kbd>J</kbd>/<kbd>L</kbd> seek 10s · <kbd>&lt;</kbd>/<kbd>&gt;</kbd> speed · <kbd>M</kbd> mute
+          · <kbd>F</kbd> fullscreen
         </p>
         <div class="timestamp-tools tool-bar">
           <button class="plain <big>" type="button" ?disabled=${!this.source}

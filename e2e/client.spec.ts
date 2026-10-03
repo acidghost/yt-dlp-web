@@ -369,6 +369,106 @@ test("keyboard shortcuts control a prepared player without hijacking form contro
   expect((await state()).volume).toBe(1);
 });
 
+test("f toggles player fullscreen without hijacking form controls", async ({
+  page,
+}) => {
+  await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/resolve", (route) => route.fulfill({ json: video }));
+  await page.goto("/");
+  test.skip(
+    !(await page.evaluate(() => document.fullscreenEnabled)),
+    "Fullscreen is unavailable in this browser",
+  );
+
+  const controller = page.locator("media-controller");
+  const player = page.locator("video");
+  const fullscreen = () =>
+    controller.evaluate((el) => document.fullscreenElement === el);
+  await player.focus();
+  await page.keyboard.press("KeyF");
+  expect(await fullscreen()).toBe(false);
+
+  await page.getByLabel("YouTube video URL").fill(url);
+  await page.getByLabel("Playback mode").selectOption("mp4");
+  await page.getByRole("button", { name: "Prepare video" }).click();
+  await expect(player).toHaveAttribute("src", video.stream);
+
+  await page.getByLabel("YouTube video URL").focus();
+  await page.keyboard.press("KeyF");
+  expect(await fullscreen()).toBe(false);
+  await page.getByRole("button", { name: "Fill page" }).focus();
+  await page.keyboard.press("KeyF");
+  expect(await fullscreen()).toBe(false);
+
+  await player.focus();
+  await page.keyboard.press("Control+KeyF");
+  expect(await fullscreen()).toBe(false);
+  await page.keyboard.down("f");
+  await expect.poll(fullscreen).toBe(true);
+  await page.keyboard.down("f");
+  expect(await fullscreen()).toBe(true);
+  await page.keyboard.up("f");
+
+  // Fullscreen shortcuts also remain available on the focused seek slider.
+  await controller.locator("media-time-range input").focus();
+  await page.keyboard.press("Shift+KeyF");
+  await expect
+    .poll(() => page.evaluate(() => document.fullscreenElement))
+    .toBeNull();
+});
+
+test("keyboard fullscreen auto-hides controls unless a control has focus", async ({
+  page,
+}) => {
+  await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/resolve", (route) => route.fulfill({ json: video }));
+  await page.route("**/api/history/*/watched", (route) =>
+    route.fulfill({ json: { ok: true } }),
+  );
+  await page.route("**/api/history/*/progress", (route) =>
+    route.fulfill({ json: { ok: true } }),
+  );
+  await serveFixtureMedia(page);
+  await page.goto("/");
+  test.skip(
+    !(await page.evaluate(() => document.fullscreenEnabled)),
+    "Fullscreen is unavailable in this browser",
+  );
+  await page.getByLabel("YouTube video URL").fill(url);
+  await page.getByLabel("Playback mode").selectOption("mp4");
+  await page.getByRole("button", { name: "Prepare video" }).click();
+
+  const controller = page.locator("media-controller");
+  const player = page.locator("video");
+  const controls = controller.locator("media-control-bar");
+  await expect(player).toHaveAttribute("src", video.stream);
+  await controller.evaluate((el) => el.setAttribute("autohide", "1"));
+  await player.evaluate((el: HTMLVideoElement) => {
+    el.loop = true;
+  });
+  await player.focus();
+  await page.keyboard.press("Space");
+  await expect(controller).not.toHaveAttribute("mediapaused");
+  await page.keyboard.press("KeyF");
+  await expect
+    .poll(() => controller.evaluate((el) => document.fullscreenElement === el))
+    .toBe(true);
+  await expect(player).toBeFocused();
+  expect(await player.evaluate((el) => el.matches(":focus-visible"))).toBe(
+    true,
+  );
+  await expect(controller).toHaveAttribute("userinactive");
+  await expect(controls).toHaveCSS("opacity", "0");
+
+  // Preserve keyboard accessibility: focused controls must remain visible.
+  await controller.locator("media-time-range input").focus();
+  await expect(controls).toHaveCSS("opacity", "1");
+  await page.keyboard.press("KeyF");
+  await expect
+    .poll(() => page.evaluate(() => document.fullscreenElement))
+    .toBeNull();
+});
+
 test("theater width and history chunks keep the player in place", async ({
   page,
 }) => {

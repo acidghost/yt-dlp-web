@@ -3,6 +3,7 @@ import { controlPlayer } from "../app/client/player-keys";
 
 function fixture() {
   let paused = true;
+  let fullscreen = false;
   const player = {
     get paused() {
       return paused;
@@ -24,8 +25,11 @@ function fixture() {
     controlPlayer(
       player as unknown as HTMLVideoElement,
       { key, repeat } as KeyboardEvent,
+      () => {
+        fullscreen = !fullscreen;
+      },
     );
-  return { player, press };
+  return { player, press, isFullscreen: () => fullscreen };
 }
 
 test("play/pause and mute ignore repeated keys", () => {
@@ -40,6 +44,16 @@ test("play/pause and mute ignore repeated keys", () => {
   press("m", true);
   expect(player.muted).toBe(true);
   expect(press("x")).toBe(false);
+});
+
+test("fullscreen toggles with f/F and ignores repeated keys", () => {
+  const { press, isFullscreen } = fixture();
+  expect(press("f")).toBe(true);
+  expect(isFullscreen()).toBe(true);
+  expect(press("f", true)).toBe(true);
+  expect(isFullscreen()).toBe(true);
+  expect(press("F")).toBe(true);
+  expect(isFullscreen()).toBe(false);
 });
 
 test("seeking respects media bounds and unavailable durations", () => {
