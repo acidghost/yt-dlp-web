@@ -637,17 +637,62 @@ for (const mode of ["mp4", "proxy"] as const) {
     await seek.click({
       position: { x: seekBounds.width / 2, y: seekBounds.height / 2 },
     });
+    const currentTime = () =>
+      player.evaluate((el) => (el as HTMLVideoElement).currentTime);
+    await expect.poll(currentTime).toBeGreaterThan(5);
+    await expect.poll(currentTime).toBeLessThan(7);
+    const clickedTime = await currentTime();
+    // The focused seek slider uses the same five-second steps as global keys,
+    // not native range steps or a second, duplicate global seek.
     await seek.press("ArrowRight");
-    await expect
-      .poll(() => player.evaluate((el) => (el as HTMLVideoElement).currentTime))
-      .toBeGreaterThan(5);
-    // A duplicate global ArrowRight would add five seconds, not a slider step.
-    expect(
-      await player.evaluate((el) => (el as HTMLVideoElement).currentTime),
-    ).toBeLessThan(7);
+    await expect.poll(currentTime).toBeCloseTo(clickedTime + 5, 1);
+    await seek.press("ArrowLeft");
+    await expect.poll(currentTime).toBeCloseTo(clickedTime, 1);
+    await seek.press("ArrowLeft");
+    await expect.poll(currentTime).toBeCloseTo(clickedTime - 5, 1);
+    await seek.press("ArrowLeft");
+    await expect.poll(currentTime).toBe(0);
+    // Keep the slider's Home/End behavior; arrows still clamp at media bounds.
+    await seek.press("End");
+    await expect.poll(currentTime).toBeCloseTo(12, 0);
+    const endTime = await currentTime();
+    await seek.press("ArrowRight");
+    await expect.poll(currentTime).toBeCloseTo(endTime, 1);
+    await seek.press("ArrowLeft");
+    await expect.poll(currentTime).toBeCloseTo(endTime - 5, 1);
     expect(await player.evaluate((el) => (el as HTMLVideoElement).paused)).toBe(
       true,
     );
+    // Clicking the seek bar must not trap the rest of the player shortcuts.
+    await page.keyboard.press("KeyJ");
+    await expect.poll(currentTime).toBe(0);
+    await page.keyboard.press("KeyL");
+    await expect.poll(currentTime).toBeCloseTo(10, 1);
+    await page.keyboard.press("Shift+Period");
+    expect(
+      await player.evaluate((el) => (el as HTMLVideoElement).playbackRate),
+    ).toBe(1.25);
+    await page.keyboard.press("Shift+Comma");
+    expect(
+      await player.evaluate((el) => (el as HTMLVideoElement).playbackRate),
+    ).toBe(1);
+    await page.keyboard.press("KeyM");
+    expect(await player.evaluate((el) => (el as HTMLVideoElement).muted)).toBe(
+      true,
+    );
+    await page.keyboard.press("KeyM");
+    expect(await player.evaluate((el) => (el as HTMLVideoElement).muted)).toBe(
+      false,
+    );
+    await page.keyboard.press("Space");
+    await expect
+      .poll(() => player.evaluate((el) => (el as HTMLVideoElement).paused))
+      .toBe(false);
+    await page.keyboard.press("KeyK");
+    await expect
+      .poll(() => player.evaluate((el) => (el as HTMLVideoElement).paused))
+      .toBe(true);
+    await expect(seek).toBeFocused();
     await expect
       .poll(async () =>
         Number(

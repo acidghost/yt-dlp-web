@@ -506,6 +506,20 @@ export class VideoApp extends LitElement {
       );
   }
 
+  private handleSeekKey(event: KeyboardEvent): void {
+    if (
+      !this.source ||
+      event.defaultPrevented ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey
+    )
+      return;
+    // Keep all player shortcuts available while the seek slider is focused.
+    // Prevent native range steps for handled keys; leave Home/End alone.
+    if (controlPlayer(this.player, event)) event.preventDefault();
+  }
+
   private readonly handlePlayerKey = (event: KeyboardEvent): void => {
     if (
       !this.source ||
@@ -672,7 +686,8 @@ export class VideoApp extends LitElement {
             <media-volume-range ?disabled=${!this.source}
               aria-disabled=${this.source ? nothing : "true"}></media-volume-range>
             <media-time-range ?disabled=${!this.source}
-              aria-disabled=${this.source ? nothing : "true"}></media-time-range>
+              aria-disabled=${this.source ? nothing : "true"}
+              @keydown=${this.handleSeekKey}></media-time-range>
             <media-time-display showduration notoggle></media-time-display>
             <span class="player-control-spacer"></span>
             <media-playback-rate-menu-button .preventClick=${!this.source} ?disabled=${!this.source}
