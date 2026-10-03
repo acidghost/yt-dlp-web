@@ -1,187 +1,317 @@
-# yt-dlp web
+# <img src="app/logo.svg" width="40" height="32" alt=""> yt-dlp web
 
-Paste a public YouTube URL. The default **Proxy YouTube HLS** mode uses yt-dlp
-to find a YouTube HLS master playlist, then Bun relays its playlists and
-requested segments through same-origin, opaque links to hls.js. Playback can
-start without downloading the full video or writing media to disk. The server
-only accepts signed media links from HTTPS `*.googlevideo.com`; URLs stay
-server-side. It selects H.264/AAC variants up to 720p and prefers the original
-audio rendition. This mode only works when YouTube supplies a compatible HLS
-master with separate audio/video tracks.
+Play public YouTube videos in your browser. Stream through a local proxy or save
+an MP4, with watch history, resume positions, and shareable timestamp links.
 
-**Download + Native MP4** is the fallback: yt-dlp downloads/merges H.264/AAC
-into `DATA_DIR/media/<video-id>/video.mp4`. Downloads are reused across plays.
-Changing modes prepares the selected source without autoplay; switching to proxy
-extracts fresh signed URLs. Bun bundles the Lit light-DOM player, hls.js and
-missing.css locally from the imported `app/index.html` route and serves API/media
-via `Bun.serve` routes.
+[Quick start](#quick-start) · [Playback](#playback) ·
+[History & storage](#history-and-storage) · [Configuration](#configuration) ·
+[Deployment](#deployment) · [Development](#development)
 
-## Player controls
+> [!IMPORTANT] **There is no login or authentication.** Use this app only on a
+> trusted network or VPN. For remote access, put it behind a private HTTPS
+> ingress; request-origin checks are not authentication.
 
-Use the integrated controls for play/pause, seeking, mute/volume, playback speed
-(0.25–2×), and fullscreen. Keyboard shortcuts: `Space`/`K` play/pause,
-`←`/`→` seek 5 seconds, `J`/`L` seek 10 seconds, `<`/`>` change speed, `F`
-toggles fullscreen, and `M`
-toggles mute. Focused form fields and player controls handle their own keys; `↑`/`↓`
-scroll outside focused sliders and menus.
+## Quick start
 
-**Copy timestamp link** copies an app link at the current time, preserving the
-playback mode. If clipboard access is blocked, select and copy the link shown.
+### Requirements
 
-Compact players keep seek above the buttons; larger players put it inline.
-**Fill page** expands the player width without entering fullscreen. Controls
-stay visible while using the keyboard or an open speed menu.
+- **Bun and Just**, pinned in [`mise.toml`](mise.toml).
+- **`yt-dlp[default]`**, including `yt-dlp-ejs`.
+- **ffmpeg and Deno** on `PATH`, along with yt-dlp.
 
-Fullscreen includes the controls and speed menu where element fullscreen is
-supported. iOS may use system video controls instead.
-
-## Run
-
-Requires Bun 1.4.2, Just, `yt-dlp[default]` (including `yt-dlp-ejs`), `ffmpeg`,
-and Deno on `PATH` (Bun and Just are pinned in `mise.toml`). For a local Python
-installation, use the hash-locked requirements from
-[`yt-dlp-oci`](https://github.com/acidghost/yt-dlp-oci) with Python 3.14, or
-install the matching yt-dlp version (2026.8.19) in a virtual environment. The
-container includes these tools. Install the locked browser dependencies with
-`bun install --frozen-lockfile`.
-
-Environment variables: `PORT` (default `3000`), `HOST` (bind address, default
-`127.0.0.1`), `PUBLIC_ORIGIN` (e.g. `https://player.example.com`), and
-`DATA_DIR` (default `./data`).
+### Start locally
 
 ```sh
+mise install --locked
 bun install --frozen-lockfile
-just dev    # watch app/index.ts; open http://127.0.0.1:3000
-just check && just typecheck && just test  # port 3000 must be free
-just test-client  # port 3000 must be free
-just build  # native executable with embedded HTML/JS/CSS: dist/yt-dlp-web
-just start  # build and launch dist/yt-dlp-web
+just dev
 ```
 
-Open a bookmarked URL such as
-`http://127.0.0.1:3000/?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dabcdefghijk`
-to prepare proxy HLS without autoplay. Add `&mode=mp4` to prepare a download
-instead. Replace the example ID with a real public video ID. An
-unknown mode is rejected without contacting the server.
+Open **<http://127.0.0.1:3000>**, paste a public YouTube URL, and select
+**Prepare video**. Press play when the source is ready.
 
-Add `&t=83` to the app link to start at 1:23 instead of the saved resume position;
-`t=0` starts from the beginning. `start=83` and YouTube-style times such as
-`t=1m23s` are also supported, including timestamps inside the YouTube URL.
-The app link's timestamp takes precedence over the YouTube URL's timestamp.
-Invalid timestamps are ignored; times beyond the video duration seek to the end.
-Without a valid timestamp, saved resume behavior is unchanged.
+To build and run the standalone executable instead, use `just start`. Its UI
+assets are embedded; yt-dlp, ffmpeg, and Deno are still runtime requirements.
 
-Watch history is saved in SQLite at `DATA_DIR/library.sqlite` (default
-`./data/library.sqlite`) when the video actually starts playing, not when a URL
-is resolved. History Play reuses the downloaded MP4 when available; otherwise it
-prepares a fresh proxy session. Playback position is saved periodically and on
-pause or when the page is hidden. Preparing the video again seeks to that
-position after metadata loads. History marks a video **Fully watched** when its
-saved position is within 30 seconds of the end (and greater than zero). This
-status is derived in the browser, not stored separately. Fully watched videos
-start from the beginning when prepared again; explicit timestamp links still
-win. **Reset watch progress** clears the saved position and watched status
-without deleting history or files; for the current video it also pauses and
-returns the player to the beginning. With no saved position, that button becomes
-**Mark as fully watched**, which sets the saved position to the known duration
-without changing files or the watch-history timestamp. It is unavailable when
-duration is unknown. History shows the resume time for unfinished videos, along
-with the original YouTube link, channel
-(when yt-dlp supplies it), duration, watch time, and MP4 file sizes. Sizes and
-availability reflect the files currently on disk, not cached database values.
-Older rows may show “Channel unavailable” until fresh metadata is extracted
-(for example, on a new proxy play) or the video is downloaded again. Downloads
-are staged under `DATA_DIR/media/<video-id>/` and reused across requests and
-restarts. Back up `DATA_DIR/library.sqlite` and `DATA_DIR/media/` together while
-the server is stopped (or use a consistent SQLite backup/snapshot); do not copy
-a live database file independently of its journal and media. **Delete files** removes
-downloaded media but keeps watched history; **Delete files and history** removes
-both. The UI confirms either choice.
+## Playback
 
-The proxy relays all watched bytes through Bun, so it uses local bandwidth even
-though it does not save files. YouTube signed URLs expire; press **Prepare
-video** again to re-extract when playback returns an expiry error. Proxy
-sessions expire on server restart; downloaded media links use stable video IDs.
-Old PoC `./tmp/<uuid>.mp4` files are neither imported nor deleted
+### Choose a mode
+
+| Mode                            | How it plays                                                           | Media on disk |
+| ------------------------------- | ---------------------------------------------------------------------- | ------------- |
+| **Proxy YouTube HLS** (default) | Stream playlists and segments through Bun to hls.js; no full download. | None          |
+| **Download + Native MP4**       | Download and merge once, then reuse on later plays.                    | Reusable MP4  |
+
+Both modes select **H.264/AAC up to 720p**. Proxy mode requires a compatible
+YouTube HLS master playlist with separate audio/video tracks and prefers the
+original audio rendition. If none is available, use **Download + Native MP4**.
+
+The proxy exposes only same-origin, opaque media links. Signed upstream URLs
+stay server-side, and only HTTPS `*.googlevideo.com` media links are accepted.
+All watched bytes pass through Bun: **proxy playback uses local bandwidth**,
+even though it writes no media files.
+
+Changing modes prepares the selected source **without autoplay**. Switching to
+proxy extracts fresh signed URLs; switching to MP4 reuses an existing download.
+
+### Player controls
+
+The integrated controls provide play/pause, seeking, mute/volume, playback speed
+(**0.25–2×**), and fullscreen.
+
+| Key           | Action                             |
+| ------------- | ---------------------------------- |
+| `Space` / `K` | Play or pause                      |
+| `←` / `→`     | Seek backward / forward 5 seconds  |
+| `J` / `L`     | Seek backward / forward 10 seconds |
+| `<` / `>`     | Decrease / increase playback speed |
+| `F`           | Toggle fullscreen                  |
+| `M`           | Toggle mute                        |
+
+Focused form fields and controls handle their own keys. `↑` / `↓` scroll the
+page outside focused sliders and menus.
+
+- **Fill page** expands the player width without entering fullscreen.
+- Compact players put seek above the buttons; larger players put it inline.
+- Controls stay visible during keyboard use or while the speed menu is open.
+- Fullscreen includes the controls and speed menu where element fullscreen is
+  supported. iOS may use system video controls instead.
+
+### Bookmark and share
+
+**Copy timestamp link** copies an app link at the current playback time and
+preserves the mode. If clipboard access is blocked, select and copy the
+displayed link manually.
+
+You can also bookmark an app URL to prepare a video **without autoplay**:
+
+```text
+http://127.0.0.1:3000/?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dabcdefghijk
+```
+
+Replace `abcdefghijk` with a real public video ID.
+
+| App URL parameter       | Effect                                              |
+| ----------------------- | --------------------------------------------------- |
+| `url`                   | The URL-encoded YouTube URL to prepare              |
+| `mode=mp4`              | Prepare a download instead of the default proxy HLS |
+| `t=83`                  | Seek to 1:23, overriding saved watch progress       |
+| `t=0`                   | Start from the beginning                            |
+| `start=83` or `t=1m23s` | Alternative timestamp formats                       |
+
+Timestamps inside the YouTube URL also work. The **app link's timestamp takes
+precedence** over the YouTube URL's timestamp. Invalid timestamps are ignored;
+times beyond the duration seek to the end. Without a valid timestamp, normal
+resume behavior applies. An unknown mode is rejected without contacting the
+server.
+
+### Proxy session limits
+
+- YouTube's signed URLs expire. Press **Prepare video** again if playback
+  reports an expiry error.
+- Proxy sessions are capped at **16** and expire after **6 hours**, with a “Play
+  again” message. Expired sessions are evicted to free capacity without a
+  restart.
+- Restarting the server invalidates proxy sessions. Downloaded media links use
+  stable video IDs and survive restarts.
+
+## History and storage
+
+Watch history is recorded **when playback actually starts**, not when a URL is
+resolved. History **Play** uses the downloaded MP4 when available; otherwise it
+prepares a fresh proxy session.
+
+### Resume and watched status
+
+Playback position is saved periodically, on pause, and when the page is hidden.
+Preparing a video again seeks to that position after metadata loads.
+
+- **Fully watched** means the saved position is within 30 seconds of the end and
+  greater than zero. The browser derives this status; it is not stored
+  separately. Fully watched videos start from the beginning when prepared again,
+  unless an explicit timestamp overrides it.
+- **Reset watch progress** clears the position and watched status without
+  deleting history or files. For the current video, it also pauses playback and
+  returns to the beginning.
+- With no saved position, the button becomes **Mark as fully watched**. It sets
+  the saved position to the known duration without changing files or the
+  watch-history timestamp. It is unavailable when duration is unknown.
+
+### What is saved
+
+| Path                                  | Contents                                             |
+| ------------------------------------- | ---------------------------------------------------- |
+| `DATA_DIR/library.sqlite`             | Watch history, resume positions, and cached metadata |
+| `DATA_DIR/media/<video-id>/video.mp4` | Reusable MP4 downloads                               |
+
+`DATA_DIR` defaults to `./data`. Downloads are staged under the video's media
+directory and reused across requests and restarts. Unfinished staged downloads
+are cleaned up on startup.
+
+History shows resume times for unfinished videos, the original YouTube link,
+channel (when supplied by yt-dlp), duration, watch time, and MP4 file sizes.
+Availability and sizes reflect **files currently on disk**, not cached database
+values. Older rows may show “Channel unavailable” until fresh metadata is
+extracted, for example by a new proxy play or another download.
+
+Old proof-of-concept `./tmp/<uuid>.mp4` files are neither imported nor deleted
 automatically. Review and remove them manually when no longer needed; `./tmp` is
 git-ignored.
 
-Before v1, schema changes may require a database reset. If the stored schema
-differs from this build's schema, startup fails with a reset instruction; it
-never changes or deletes the database automatically. Stop the server, then run
-`just reset-db` from the source tree or `yt-dlp-web --reset-db` with the same
-`DATA_DIR` as the server. This removes only `library.sqlite` and its SQLite
-journal files. It clears watch history, resume positions, and cached metadata,
-but leaves downloaded MP4s in `DATA_DIR/media/` for reuse.
+### Delete and back up
 
-## Container deployment
+Both deletion choices require confirmation in the UI:
 
-Build for `linux/amd64` (the published `yt-dlp-oci` image supports that
-architecture). The builder compiles a Linux Bun binary with embedded UI assets;
-the digest-pinned [`yt-dlp-oci`](https://github.com/acidghost/yt-dlp-oci) base
-supplies hash-locked `yt-dlp[default]`/`yt-dlp-ejs`, Python and Deno. This image
-adds ffmpeg. Do **not** copy a macOS `dist/yt-dlp-web` into the container. It
-runs as UID/GID 1000 and requires a writable volume at `/data`. It binds
-`0.0.0.0:3000` and **requires** `PUBLIC_ORIGIN` to be the one external HTTPS
-origin; it deliberately fails at startup if this is missing. `DATA_DIR=/data`
-and `DENO_DIR=/data/.deno` keep history, media and Deno's cache on the volume.
+| Action                       | Removes                            | Keeps         |
+| ---------------------------- | ---------------------------------- | ------------- |
+| **Delete files**             | Downloaded media                   | Watch history |
+| **Delete files and history** | Downloaded media and watch history | —             |
+
+> [!WARNING] Back up `DATA_DIR/library.sqlite` and `DATA_DIR/media/` together
+> while the server is stopped, or use a consistent SQLite backup/snapshot. Do
+> not copy a live database independently of its journal and media.
+
+### Reset an incompatible database
+
+Before v1, schema changes may require a reset. If the stored schema differs from
+this build's schema, startup fails with a reset instruction. **The app never
+changes or deletes the database automatically.**
+
+Stop the server, then run one of these with the **same `DATA_DIR`** as the
+server:
 
 ```sh
-just build-image   # linux/amd64 image: yt-dlp-web:local
-just smoke-image   # rebuild, then check yt-dlp, yt-dlp-ejs, Deno, ffmpeg
-just run-image https://player.example.com  # creates/reuses yt-dlp-web-data volume
+just reset-db         # from the source tree
+# or
+yt-dlp-web --reset-db  # using the installed executable
 ```
 
-Pushing a Git tag publishes a signed `linux/amd64` image to
-`ghcr.io/acidghost/yt-dlp-web:<tag>` with provenance and an SBOM. No floating
-`latest` tag is published; pin deployments to the resulting digest.
+This removes only `library.sqlite` and its SQLite journal files. It clears watch
+history, resume positions, and cached metadata, but **keeps downloaded MP4s**
+for reuse.
 
-For an arm64 node, build a matching arm64 `yt-dlp-oci` base first; do not
-cross-build this runtime from the amd64-only release. Both base images are
-pinned by digest in `Dockerfile`. Put a trusted HTTPS reverse proxy in front of
-the container and expose it **only** over a VPN or private ingress, not
-publicly; there is no login/authentication. Forward the original `Host` and
-`Origin` unchanged (do not rely on `X-Forwarded-Host`). The loopback-published
-example needs an ingress forwarding requests from `https://player.example.com`;
-browsing `http://127.0.0.1:3000` directly with that configuration will be
-rejected by the Host guard. For local browsing, use `just dev` with the default
-loopback settings instead.
+## Configuration
 
-In Kubernetes, run **one replica** with one ReadWriteOnce PVC mounted at `/data`
-(e.g. 20Gi to start); set `PUBLIC_ORIGIN` explicitly on the Deployment and use a
-private HTTPS ingress with a matching host. Schedule it on amd64 nodes (e.g.
-`nodeSelector: { kubernetes.io/arch: amd64 }`). Set `runAsUser: 1000`,
-`runAsGroup: 1000`, and `fsGroup: 1000` if the volume needs group write access.
-Probe `GET /healthz` on port 3000 for liveness/readiness. For example, start
-with memory request/limit 256Mi/1Gi, CPU request/limit 250m/2, and
-`ephemeral-storage` request/limit 256Mi/1Gi, then measure actual download and
-ffmpeg use. Downloads and packaging stage on `/data`, so **size and monitor the
-PVC separately**; there is no app-level media quota. Restrict runtime egress as
-needed for YouTube, googlevideo, and the extractor's JS challenges. On
-SIGTERM/SIGINT the server stops accepting requests and allows up to five seconds
-for active requests before closing media streams; keep the Kubernetes
-termination grace period above five seconds. Unfinished staged downloads are
-cleaned up on restart. Restart with the same PVC to retain history and
-downloads. Review old PoC `tmp/` UUID files manually before removing them; the
-app never imports or deletes them.
+| Variable        | Default     | Purpose                                                    |
+| --------------- | ----------- | ---------------------------------------------------------- |
+| `PORT`          | `3000`      | Server port                                                |
+| `HOST`          | `127.0.0.1` | Bind address                                               |
+| `PUBLIC_ORIGIN` | Unset       | Trusted external origin, e.g. `https://player.example.com` |
+| `DATA_DIR`      | `./data`    | SQLite history and downloaded media                        |
 
-After `just smoke-image`, run the container behind ingress and check `/healthz`
-and the bundled HTML/JS/CSS. Play a public non-live video in all three modes;
-restart with the same volume, replay history, and check both deletion choices.
+Binding outside loopback requires `PUBLIC_ORIGIN`. Use exactly one HTTPS origin
+behind a trusted ingress; only its Host/Origin is accepted. The default loopback
+configuration accepts `localhost` and `127.0.0.1` as page hostnames.
 
-By default the server binds to loopback and accepts `localhost` or `127.0.0.1`
-as the page hostname. Setting `HOST=0.0.0.0` (or any non-loopback address)
-requires `PUBLIC_ORIGIN`: exactly one HTTPS origin behind a trusted ingress, and
-only that Host/Origin is then accepted. Every route checks the Host header
-(DNS-rebind protection); mutations (`POST`/`DELETE`) additionally require a
-matching `Origin` and same-origin Fetch-Metadata, so cross-site forms and
-fetches are rejected even without an `Origin` header. CORS stays disabled — no
-`Access-Control-Allow-Origin` is ever emitted. `GET /healthz` answers probes
-from any Host. Proxy HLS sessions are capped at 16 and expire after 6 hours with
-a “Play again” message; expired sessions are evicted so capacity frees up
-without a restart. Origin checks are not authentication: only expose this behind
-a trusted network or VPN. Note: under `just dev`, Bun’s own dev-server guard
-additionally blocks foreign Host headers for the HTML page itself; the compiled
-binary serves it normally. It handles public, non-live single YouTube videos
-only; unsupported formats, playlists, accounts, cookies, and YouTube bot checks
-are out of scope.
+## Deployment
+
+### Container
+
+The image targets **`linux/amd64`**, runs as **UID/GID 1000**, and needs a
+writable volume at **`/data`**.
+
+```sh
+just build-image
+just smoke-image
+just run-image https://player.example.com
+```
+
+- `build-image` builds `yt-dlp-web:local` for Linux with embedded UI assets. Do
+  **not** copy a macOS `dist/yt-dlp-web` into the image.
+- `smoke-image` rebuilds, then checks yt-dlp, yt-dlp-ejs, Deno, and ffmpeg.
+- `run-image` creates or reuses the `yt-dlp-web-data` volume and publishes port
+  3000 on loopback for a private HTTPS ingress.
+
+The container binds `0.0.0.0:3000`. Set `PUBLIC_ORIGIN` to the external HTTPS
+origin; startup fails if it is missing. `DATA_DIR=/data` and
+`DENO_DIR=/data/.deno` keep history, media, and Deno's cache on the volume.
+
+> [!NOTE] The example expects ingress traffic from `https://player.example.com`.
+> Browsing `http://127.0.0.1:3000` directly with that configuration is rejected
+> by the Host guard. For local browsing, use `just dev` with its default
+> loopback settings.
+
+The digest-pinned [`yt-dlp-oci`](https://github.com/acidghost/yt-dlp-oci)
+runtime base supplies hash-locked yt-dlp/yt-dlp-ejs, Python, and Deno; this
+image adds ffmpeg. Both base images are pinned by digest in
+[`Dockerfile`](Dockerfile).
+
+Pushing a Git tag publishes a **signed** image to
+`ghcr.io/acidghost/yt-dlp-web:<tag>`, with provenance and an SBOM. There is no
+floating `latest` tag; **pin deployments to the resulting digest**.
+
+For an arm64 node, build a matching arm64 `yt-dlp-oci` base first. Do not
+cross-build this runtime from the amd64-only release.
+
+### Kubernetes
+
+Run behind a **private HTTPS ingress** with a host matching `PUBLIC_ORIGIN`.
+
+| Setting                  | Recommendation                                                                         |
+| ------------------------ | -------------------------------------------------------------------------------------- |
+| Replicas                 | **1**                                                                                  |
+| Persistent storage       | One ReadWriteOnce PVC mounted at `/data`; start with 20Gi                              |
+| Architecture             | amd64 nodes: `nodeSelector: { kubernetes.io/arch: amd64 }`                             |
+| Security context         | `runAsUser: 1000`, `runAsGroup: 1000`; `fsGroup: 1000` if group write access is needed |
+| Origin                   | Set `PUBLIC_ORIGIN` explicitly on the Deployment                                       |
+| Liveness / readiness     | `GET /healthz` on port 3000                                                            |
+| Termination grace period | **More than 5 seconds**                                                                |
+
+Suggested starting resources; measure actual download and ffmpeg use:
+
+| Resource          | Request | Limit |
+| ----------------- | ------- | ----- |
+| Memory            | 256Mi   | 1Gi   |
+| CPU               | 250m    | 2     |
+| Ephemeral storage | 256Mi   | 1Gi   |
+
+**Size and monitor the PVC separately.** Downloads and packaging stage on
+`/data`, and there is no app-level media quota. Restrict runtime egress as
+needed for YouTube, googlevideo, and the extractor's JavaScript challenges.
+
+On SIGTERM/SIGINT, the server stops accepting requests and allows up to five
+seconds for active requests before closing media streams. Restart with the same
+PVC to retain history and downloads.
+
+### Deployment checklist
+
+After `just smoke-image`, run behind ingress and verify:
+
+- [ ] `/healthz` and the bundled HTML/JS/CSS load.
+- [ ] A public, non-live video plays in **both playback modes**.
+- [ ] History replays after a restart with the same volume.
+- [ ] Both deletion choices work as expected.
+
+## Security and scope
+
+Expose remote deployments **only over a VPN or private HTTPS ingress**, never
+publicly. Forward the original `Host` and `Origin` unchanged; do not rely on
+`X-Forwarded-Host`.
+
+- **API Host validation** protects against DNS rebinding. `GET /healthz` accepts
+  any Host so probes can reach it.
+- **Mutations** (`POST` / `PUT` / `DELETE`) check `Origin` and Fetch-Metadata to
+  reject cross-site forms and fetches, even without an `Origin` header.
+- **CORS is disabled**: no `Access-Control-Allow-Origin` header is emitted.
+- Under `just dev`, Bun's own dev-server guard additionally blocks foreign Host
+  headers for the HTML page. The compiled binary serves it normally.
+
+The app supports **public, non-live, single YouTube videos only**. Unsupported
+formats, playlists, accounts, cookies, and YouTube bot checks are out of scope.
+
+## Development
+
+Bun serves API/media routes via `Bun.serve` and bundles the Lit light-DOM
+player, hls.js, and missing.css locally from [`app/index.html`](app/index.html).
+
+| Command            | Purpose                                                       |
+| ------------------ | ------------------------------------------------------------- |
+| `just dev`         | Run with watch mode on `app/index.ts`                         |
+| `just check`       | Run Biome checks                                              |
+| `just typecheck`   | Run strict TypeScript checks                                  |
+| `just test`        | Run Bun tests in `tests/`                                     |
+| `just test-client` | Install Chromium if needed and run Playwright tests in `e2e/` |
+| `just build`       | Build `dist/yt-dlp-web` with embedded HTML/JS/CSS             |
+| `just start`       | Build and launch the standalone executable                    |
+
+Keep **port 3000 free** when running either test suite.
