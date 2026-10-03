@@ -246,7 +246,7 @@ main {
   min-block-size: 0;
 }
 
-/* Media Chrome breakpoints measure the player, including Fill page/fullscreen. */
+/* Breakpoints measure the player itself, including Fill page/fullscreen. */
 .player-controller[breakpointlg] media-control-bar {
   flex-wrap: nowrap;
 }

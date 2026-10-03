@@ -46,7 +46,7 @@ function durationLabel(seconds: number | null): string {
 
 @customElement("video-app")
 export class VideoApp extends LitElement {
-  // Keep the app in light DOM; Media Chrome styles its own shadow controls.
+  // Keep the app in light DOM; player controls style their own Shadow DOM.
   override createRenderRoot(): HTMLElement {
     return this;
   }
@@ -440,8 +440,8 @@ export class VideoApp extends LitElement {
   private focusRateMenu(event: Event): void {
     const menu = event.currentTarget as HTMLElement;
     if (event.target !== menu || menu.hidden) return;
-    // 4.19.2 focuses on transitionend. Disabled or coalesced transitions never
-    // emit it; complete that handoff and consume its once-listener ourselves.
+    // Complete the menu's transition-driven focus handoff when animations are
+    // disabled or coalesced, consuming the pending once-listener as well.
     if (menu.getAnimations().length === 0)
       menu.dispatchEvent(
         new TransitionEvent("transitionend", { propertyName: "opacity" }),
@@ -605,7 +605,7 @@ export class VideoApp extends LitElement {
             ?disabled=${!this.source} aria-disabled=${this.source ? nothing : "true"}>
           </media-playback-rate-menu>
           <media-control-bar class="player-actions">
-            <!-- 4.19.2 tooltip setup reattaches disabled button click listeners. -->
+            <!-- Block activation too: tooltip setup can attach click listeners to disabled buttons. -->
             <media-play-button .preventClick=${!this.source} ?disabled=${!this.source}
               aria-disabled=${this.source ? nothing : "true"}></media-play-button>
             <media-mute-button .preventClick=${!this.source} ?disabled=${!this.source}

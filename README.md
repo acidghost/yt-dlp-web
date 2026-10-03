@@ -16,6 +16,21 @@ extracts fresh signed URLs. Bun bundles the Lit light-DOM player, hls.js and
 missing.css locally from the imported `app/index.html` route and serves API/media
 via `Bun.serve` routes.
 
+## Player controls
+
+Use the integrated controls for play/pause, seeking, mute/volume, playback speed
+(0.25–2×), and fullscreen. Keyboard shortcuts: `Space`/`K` play/pause,
+`←`/`→` seek 5 seconds, `J`/`L` seek 10 seconds, `<`/`>` change speed, and `M`
+toggles mute. Focused form fields and player controls handle their own keys; `↑`/`↓`
+scroll outside focused sliders and menus.
+
+Compact players keep seek above the buttons; larger players put it inline.
+**Fill page** expands the player width without entering fullscreen. Controls
+stay visible while using the keyboard or an open speed menu.
+
+Fullscreen includes the controls and speed menu where element fullscreen is
+supported. iOS may use system video controls instead.
+
 ## Run
 
 Requires Bun 1.4.2, Just, `yt-dlp[default]` (including `yt-dlp-ejs`), `ffmpeg`,
