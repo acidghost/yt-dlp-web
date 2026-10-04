@@ -26,6 +26,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: just check
       - run: just typecheck
-      - run: just test
+      - run: just test-app
+      - run: just test-process
       - run: just test-client
       - run: just build

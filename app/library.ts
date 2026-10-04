@@ -71,7 +71,12 @@ export class Library {
   private findPosition!: Statement<{ position_seconds: number }, [string]>;
   private savePosition!: Statement<unknown, [number, string]>;
 
-  constructor(dataDir: string) {
+  private closed = false;
+
+  constructor(
+    private dataDir: string,
+    private now: () => number = Date.now,
+  ) {
     mkdirSync(dataDir, { recursive: true });
     const path = join(dataDir, "library.sqlite");
     this.db = new Database(path, { create: true });
@@ -82,6 +87,12 @@ export class Library {
       this.db.close();
       throw error;
     }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.db.close();
+    this.closed = true;
   }
 
   private checkSchema(path: string): void {
@@ -154,7 +165,7 @@ export class Library {
       meta.title,
       meta.duration,
       meta.channel,
-      new Date().toISOString(),
+      new Date(this.now()).toISOString(),
     );
   }
 
@@ -171,10 +182,10 @@ export class Library {
   }
 
   // MP4 size comes from the published file, never from a DB flag.
-  async list(dataDir: string): Promise<HistoryEntry[]> {
+  async list(): Promise<HistoryEntry[]> {
     return Promise.all(
       this.listRows.all().map(async (row) => {
-        const dir = join(dataDir, "media", row.id);
+        const dir = join(this.dataDir, "media", row.id);
         const mp4 = Bun.file(join(dir, "video.mp4"));
         const mp4Bytes = (await mp4.exists()) && mp4.size > 0 ? mp4.size : null;
 

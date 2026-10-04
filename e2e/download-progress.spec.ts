@@ -1,5 +1,8 @@
+// Browser integration: controlled backend replies isolate DOM/media regressions.
+// Full real-API journeys live in journeys.spec.ts.
 import { expect, type Page, type Route, test } from "playwright/test";
 import type { PreparationSnapshot, TransferProgress } from "../app/protocol";
+import { deferred } from "../tests/support/async";
 
 const url = "https://www.youtube.com/watch?v=abcdefghijk";
 const token = "a1111111-1111-4111-8111-111111111111";
@@ -197,41 +200,98 @@ test("global cancellation waits for cleanup and restores keyboard focus", async 
   expect(deletes).toBe(1);
 });
 
-test("a stale ready GET cannot attach over global cancellation", async ({
-  page,
-}) => {
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  let calls = 0;
-  let canceled = false;
-  await prepare(page, async (route) => {
-    if (route.request().method() === "DELETE") {
-      canceled = true;
-      await route.fulfill({ json: { state: "canceled" } });
-    } else if (++calls === 1) await route.fulfill({ json: active() });
-    else {
-      await held;
-      // The client may abort the obsolete GET as well as ignore its result.
-      await route.fulfill({ json: { state: "ready", video } }).catch(() => {});
+for (const outcome of ["aborted", "delivered"] as const) {
+  test(`a ${outcome} stale ready GET cannot attach over global cancellation`, async ({
+    page,
+  }) => {
+    if (outcome === "delivered") {
+      // Model transport that cannot abort this one in-flight GET. This tests
+      // generation fencing separately from successful HTTP cancellation.
+      await page.addInitScript(() => {
+        const realFetch = window.fetch.bind(window);
+        let gets = 0;
+        Object.assign(window, {
+          fetch: (input: RequestInfo | URL, options?: RequestInit) => {
+            if (
+              String(input).startsWith("/api/downloads/") &&
+              !options?.method &&
+              ++gets === 2
+            ) {
+              const { signal: _signal, ...unabortable } = options ?? {};
+              return realFetch(input, unabortable);
+            }
+            return realFetch(input, options);
+          },
+        });
+      });
+    }
+    const held = deferred();
+    const fulfillment = deferred<unknown>();
+    let staleRequest: ReturnType<Route["request"]> | undefined;
+    let calls = 0;
+    let canceled = false;
+    await prepare(page, async (route) => {
+      if (route.request().method() === "DELETE") {
+        canceled = true;
+        await route.fulfill({ json: { state: "canceled" } });
+      } else if (++calls === 1) await route.fulfill({ json: active() });
+      else {
+        staleRequest = route.request();
+        await held.promise;
+        try {
+          await route.fulfill({ json: { state: "ready", video } });
+          fulfillment.resolve(null);
+        } catch (error) {
+          fulfillment.resolve(error);
+        }
+      }
+    });
+    try {
+      await expect.poll(() => calls).toBe(2);
+      const settlement =
+        outcome === "aborted"
+          ? page.waitForEvent(
+              "requestfailed",
+              (request) => request === staleRequest,
+            )
+          : page.waitForEvent(
+              "requestfinished",
+              (request) => request === staleRequest,
+            );
+      await page.getByRole("button", { name: "Cancel download" }).click();
+      await expect(page.locator("#status")).toHaveAttribute(
+        "data-phase",
+        "canceled",
+      );
+      expect(canceled).toBe(true);
+      held.resolve();
+      const request = await settlement;
+      const fulfillmentError = await fulfillment.promise;
+      if (outcome === "aborted") expect(request.failure()).not.toBeNull();
+      else {
+        expect(fulfillmentError).toBeNull();
+        const response = await request.response();
+        if (!response) throw new Error("Stale response was not delivered");
+        expect(await response.finished()).toBeNull();
+        expect(await response.json()).toEqual({ state: "ready", video });
+      }
+      // Let the delivered fetch continuation and subsequent rendering settle.
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      );
+      await expect(page.locator("video")).not.toHaveAttribute("src");
+      await expect(page.locator("#status")).toHaveAttribute(
+        "data-phase",
+        "canceled",
+      );
+    } finally {
+      held.resolve();
     }
   });
-  await expect.poll(() => calls).toBe(2);
-  await page.getByRole("button", { name: "Cancel download" }).click();
-  await expect(page.locator("#status")).toHaveAttribute(
-    "data-phase",
-    "canceled",
-  );
-  expect(canceled).toBe(true);
-  release();
-  await page.waitForTimeout(100);
-  await expect(page.locator("video")).not.toHaveAttribute("src");
-  await expect(page.locator("#status")).toHaveAttribute(
-    "data-phase",
-    "canceled",
-  );
-});
+}
 
 test("polling and cancel failures never claim that the download stopped", async ({
   page,
@@ -267,9 +327,27 @@ test("polling and cancel failures never claim that the download stopped", async 
   await expect(page.locator("video")).not.toHaveAttribute("src");
 });
 
-test("pagehide sends global keepalive cancellation, visibility changes do not", async ({
+test("pagehide requests global keepalive cancellation, visibility changes do not", async ({
   page,
 }) => {
+  await page.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    const requests: { method: string; keepalive: boolean }[] = [];
+    Object.assign(window, { exitCancellationRequests: requests });
+    Object.assign(window, {
+      fetch: (input: RequestInfo | URL, options?: RequestInit) => {
+        if (
+          String(input).startsWith("/api/downloads/") &&
+          options?.method === "DELETE"
+        )
+          requests.push({
+            method: options.method,
+            keepalive: options.keepalive === true,
+          });
+        return realFetch(input, options);
+      },
+    });
+  });
   let deletes = 0;
   await prepare(page, async (route) => {
     if (route.request().method() === "DELETE") {
@@ -290,6 +368,13 @@ test("pagehide sends global keepalive cancellation, visibility changes do not", 
     window.dispatchEvent(new PageTransitionEvent("pagehide")),
   );
   await expect.poll(() => deletes).toBe(1);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { exitCancellationRequests: unknown[] })
+          .exitCancellationRequests,
+    ),
+  ).toEqual([{ method: "DELETE", keepalive: true }]);
 });
 
 test("remote cancellation and safe errors stop polling without attaching a source", async ({
@@ -349,10 +434,7 @@ test("back/forward-cache restore reconciles pagehide cancellation instead of lea
 test("a restored page can retry cancellation when the close request was lost", async ({
   page,
 }) => {
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const { promise: held, resolve: release } = deferred();
   let deletes = 0;
   await prepare(page, async (route) => {
     if (route.request().method() === "DELETE") {

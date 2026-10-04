@@ -1,6 +1,10 @@
+// Browser integration: controlled backend replies isolate DOM/media regressions.
+// Full real-API journeys live in journeys.spec.ts.
 import { copyFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, type Page, test } from "playwright/test";
+import type { HistoryEntry } from "../app/protocol";
+import { deferred } from "../tests/support/async";
 
 const url = "https://www.youtube.com/watch?v=abcdefghijk";
 const entry = {
@@ -249,10 +253,7 @@ test("live progress marks completion, retains the ended position, and reset wait
   await serveMedia(page);
   let positionSeconds = 0;
   let saveHeld = false;
-  let releaseSave: (() => void) | undefined;
-  const heldSave = new Promise<void>((resolve) => {
-    releaseSave = resolve;
-  });
+  const { promise: heldSave, resolve: releaseSave } = deferred();
   const writes: string[] = [];
   await page.route("**/api/history", (route) =>
     route.fulfill({ json: [{ ...entry, positionSeconds }] }),
@@ -317,7 +318,7 @@ test("live progress marks completion, retains the ended position, and reset wait
   await reset.click();
   await expect(reset).toBeDisabled();
   expect(writes).not.toContain("reset");
-  releaseSave?.();
+  releaseSave();
   await expect(page.locator("#status")).toContainText("Watch progress reset");
   await expect(reset).toHaveCount(0);
   expect(writes.slice(-2)).toEqual(["save:120", "reset"]);
@@ -360,10 +361,7 @@ test("marking watched survives a late watch-recording response", async ({
   let positionSeconds = 0;
   let watchPending = false;
   let progressWrites = 0;
-  let releaseWatch: (() => void) | undefined;
-  const heldWatch = new Promise<void>((resolve) => {
-    releaseWatch = resolve;
-  });
+  const { promise: heldWatch, resolve: releaseWatch } = deferred();
   await page.route("**/api/history", (route) =>
     route.fulfill({ json: [{ ...entry, positionSeconds }] }),
   );
@@ -396,7 +394,7 @@ test("marking watched survives a late watch-recording response", async ({
     .click();
   await expect(page.locator(".history-watched")).toHaveCount(1);
   const response = page.waitForResponse("**/api/history/*/watched");
-  releaseWatch?.();
+  releaseWatch();
   await response;
   await page.evaluate(
     () =>
@@ -408,4 +406,101 @@ test("marking watched survives a late watch-recording response", async ({
   await expect(page.locator(".history-watched")).toHaveCount(1);
   expect(positionSeconds).toBe(entry.duration);
   expect(progressWrites).toBe(0);
+});
+
+for (const filesOnly of [true, false]) {
+  test(`${filesOnly ? "files-only" : "files-and-history"} deletion uses the correct endpoint and distinct history outcome`, async ({
+    page,
+  }) => {
+    let rows: HistoryEntry[] = [entry];
+    const deletes: string[] = [];
+    await page.route("**/api/history", (route) =>
+      route.fulfill({ json: rows }),
+    );
+    await page.route("**/api/history/**", (route) => {
+      expect(route.request().method()).toBe("DELETE");
+      deletes.push(new URL(route.request().url()).pathname);
+      rows = filesOnly ? [{ ...entry, mp4: { sizeBytes: null } }] : [];
+      return route.fulfill({ json: { ok: true } });
+    });
+    await page.goto("/");
+    const label = filesOnly
+      ? "Delete downloaded files for Fixture video"
+      : "Delete files and history for Fixture video";
+    const confirmation = page.waitForEvent("dialog");
+    const clicking = page
+      .getByRole("button", { name: label, exact: true })
+      .click();
+    const dialog = await confirmation;
+    expect(dialog.message()).toBe(
+      `${filesOnly ? "Delete downloaded files" : "Delete files and history"} for "Fixture video"?`,
+    );
+    await dialog.accept();
+    await clicking;
+    await expect(page.locator("#status")).toHaveText(
+      filesOnly ? "Downloaded files deleted." : "Files and history deleted.",
+    );
+    expect(deletes).toEqual([
+      `/api/history/${entry.id}${filesOnly ? "/files" : ""}`,
+    ]);
+    if (filesOnly) {
+      await expect(page.locator(".history-item")).toContainText(
+        "Fixture video",
+      );
+      await expect(page.locator(".history-item")).toContainText("No files");
+      await expect(
+        page.getByRole("button", { name: label, exact: true }),
+      ).toHaveCount(0);
+    } else await expect(page.locator(".history-item")).toHaveCount(0);
+  });
+}
+
+test("dismissing deletion confirmation preserves files/history and sends no mutation", async ({
+  page,
+}) => {
+  const deletes: string[] = [];
+  await page.route("**/api/history", (route) =>
+    route.fulfill({ json: [entry] }),
+  );
+  await page.route("**/api/history/**", (route) => {
+    deletes.push(route.request().url());
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.goto("/");
+  const confirmation = page.waitForEvent("dialog");
+  const clicking = page
+    .getByRole("button", {
+      name: "Delete files and history for Fixture video",
+      exact: true,
+    })
+    .click();
+  await (await confirmation).dismiss();
+  await clicking;
+  expect(deletes).toEqual([]);
+  await expect(page.locator(".history-item")).toContainText("Fixture video");
+  await expect(page.locator(".history-item")).toContainText("MP4");
+});
+
+test("a deletion API failure preserves the history row and never claims success", async ({
+  page,
+}) => {
+  await page.route("**/api/history", (route) =>
+    route.fulfill({ json: [entry] }),
+  );
+  await page.route("**/api/history/**", (route) =>
+    route.fulfill({ status: 500, json: { error: "Deletion failed." } }),
+  );
+  await page.goto("/");
+  const confirmation = page.waitForEvent("dialog");
+  const clicking = page
+    .getByRole("button", {
+      name: "Delete downloaded files for Fixture video",
+      exact: true,
+    })
+    .click();
+  await (await confirmation).accept();
+  await clicking;
+  await expect(page.locator("#status")).toHaveText("Deletion failed.");
+  await expect(page.locator(".history-item")).toContainText("Fixture video");
+  await expect(page.locator(".history-item")).toContainText("MP4");
 });

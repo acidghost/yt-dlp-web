@@ -347,22 +347,38 @@ formats, playlists, accounts, cookies, and YouTube bot checks are out of scope.
 Bun serves API/media routes via `Bun.serve` and bundles the Lit light-DOM
 player, hls.js, and missing.css locally from [`app/index.html`](app/index.html).
 
-| Command            | Purpose                                                       |
-| ------------------ | ------------------------------------------------------------- |
-| `just dev`         | Run with watch mode on `app/index.ts`                         |
-| `just check`       | Run Biome checks                                              |
-| `just typecheck`   | Run strict TypeScript checks                                  |
-| `just test`        | Run Bun tests in `tests/`                                     |
-| `just test-client` | Install Chromium if needed and run Playwright tests in `e2e/` |
-| `just smoke-download` | Real yt-dlp/ffmpeg progress, merging, and cancel against local fixtures |
-| `just build`       | Build `dist/yt-dlp-web` with embedded HTML/JS/CSS             |
-| `just start`       | Build and launch the standalone executable                    |
+| Command                 | Purpose |
+| ----------------------- | ------- |
+| `just dev`              | Run with watch mode on `app/index.ts` |
+| `just check`            | Run Biome checks |
+| `just typecheck`        | Run strict TypeScript checks |
+| `just test-all`         | All four test suites sequentially, including real tools and Chromium |
+| `just test-app`             | Composed Bun integration and focused unit tests; file-isolated external doubles |
+| `just test-app-shuffle [seed]` | Ordinary suite in reproducible shuffled order (default 424242) |
+| `just test-process`     | Real POSIX process-group termination contract |
+| `just test-media-tools` | Opt-in offline yt-dlp/ffmpeg progress, merging, metadata, codecs and cancellation |
+| `just test-media-tools-shuffle [seed]` | Offline tools in shuffled order (default 42) |
+| `just test-client`      | Chromium real-backend journeys and focused browser integration |
+| `just build`            | Build `dist/yt-dlp-web` with embedded HTML/JS/CSS |
+| `just start`            | Build and launch the standalone executable |
 
-Keep **port 3000 free** when running either test suite. The optional
-`just smoke-download` needs the runtime tools on `PATH`, but no network access:
-it uses local fixture media, not YouTube. Local file URLs are enabled only in
-its fixture wrapper, never in the application's download command. Run it on
-macOS and the target Linux runtime when validating process-group behavior;
-a sandbox may restrict process-group signalling. A failed smoke keeps its
-temporary files for diagnosis rather than removing files that an unconfirmed
-descendant could still be writing.
+Ordinary tests use ephemeral ports and need no yt-dlp, ffmpeg or external
+network. In a sandbox granting only localhost port 3000, use
+`TEST_PORT=3000 just test-app` serially. Keep **port 3000 free** for Playwright.
+The browser host owns fresh `tmp/e2e-data`; do not reuse that directory for
+another running instance.
+
+`just test-all` includes the real-tools and browser prerequisites below; shuffle
+recipes are optional repeat runs, not additional suites.
+
+`just test-media-tools` requires yt-dlp, ffmpeg and ffprobe on `PATH`, but no
+network: only source extraction is adapted to local fixture data at the real
+process launcher. Production flags, stream policy and metadata parsing stay
+real. Local file URLs are never enabled by the application. Missing tools or
+unconfirmed termination fail the suite; potentially active files are retained.
+Run the OS/tools contracts on macOS and target Linux/container environments.
+Sandboxes may restrict signalling; Chromium cannot run in the current nono
+sandbox.
+
+See [testing and ownership](docs/testing.md) for suite boundaries, removed-test
+replacements, verification gates and resource ownership.

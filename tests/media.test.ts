@@ -1,344 +1,415 @@
-import { expect, test } from "bun:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { afterAll, afterEach, expect, mock, spyOn, test } from "bun:test";
+import { resolve } from "node:path";
 import {
   canonicalVideoUrl,
-  downloadFormat,
+  DownloadTerminationError,
   downloadVideo,
-  extractionFailure,
+  extractHls,
   InputError,
-  readDownloadOutput,
 } from "../app/media";
+import type { TransferProgress } from "../app/protocol";
+import { deferred, waitFor } from "./support/async";
+import { controlledProcess } from "./support/process";
 
-test("format selector requests copy-compatible H.264 video and AAC audio up to 720p", () => {
-  expect(downloadFormat).toContain(
-    "bv[ext=mp4][vcodec^=avc1][height<=720]+ba[ext=m4a][acodec^=mp4a]",
-  );
-  expect(downloadFormat).toContain("/b[ext=mp4]");
+const url = "https://www.youtube.com/watch?v=abcdefghijk";
+const output = "tmp/media-fixture/video.mp4";
+const active = new Set<Promise<unknown>>();
+function observe<T>(promise: Promise<T>): Promise<T> {
+  active.add(promise);
+  void promise.catch(() => {});
+  return promise;
+}
+let proc = controlledProcess();
+let command: readonly string[] = [];
+const launch = mock((argv: readonly string[]) => {
+  command = argv;
+  return proc;
+});
+mock.module("../app/owned-process", () => ({ startOwnedProcess: launch }));
+const spawn = spyOn(Bun, "spawn").mockImplementation(
+  () => proc as unknown as ReturnType<typeof Bun.spawn>,
+);
+afterAll(() => spawn.mockRestore());
+afterEach(async () => {
+  proc.exit();
+  await Promise.allSettled(active);
+  active.clear();
+  launch.mockClear();
+  command = [];
+  proc = controlledProcess();
 });
 
-test("extraction errors distinguish proxy denial, unavailable formats, and YouTube bot checks", () => {
-  expect(
-    extractionFailure("ERROR: Sign in to confirm you’re not a bot.").message,
-  ).toContain("bot check");
-  expect(
-    extractionFailure(
-      "Tunnel connection failed: 403 Forbidden: host www.google.com:443 is not in the allowlist",
-    ).message,
-  ).toContain("www.google.com");
-  expect(
-    extractionFailure("ERROR: Requested format is not available").message,
-  ).toContain("H.264/AAC");
-  expect(extractionFailure("unknown failure").message).not.toContain(
-    "unknown failure",
-  );
-});
-
-test("accepts yt-dlp's absolute after_move filepath for a relative staging path, but rejects another file", async () => {
-  const dir = join(
-    process.cwd(),
-    "tmp",
-    `download-path-${crypto.randomUUID()}`,
-  );
-  const bin = join(dir, "bin");
-  await mkdir(bin, { recursive: true });
-  await writeFile(
-    join(bin, "yt-dlp"),
-    `#!/bin/sh
-previous=""
-for arg in "$@"; do
-  if [ "$previous" = "--output" ]; then output="$arg"; fi
-  previous="$arg"
-done
-mkdir -p "$(dirname "$output")"
-printf 'fixture' > "$output"
-absolute="$(cd "$(dirname "$output")" && pwd -P)/$(basename "$output")"
-if [ "$FAKE_WRONG_PATH" = "1" ]; then absolute="$absolute.other"; fi
-if [ "$FAKE_UPLOADER_ONLY" = "1" ]; then
-  printf '{"title":"Fixture","duration":10,"uploader":"Fallback uploader","filepath":"%s"}\\n' "$absolute"
-else
-  printf '{"title":"Fixture","duration":10,"channel":"Fixture channel","filepath":"%s"}\\n' "$absolute"
-fi
-`,
-    { mode: 0o755 },
-  );
-  const output = `tmp/${dir.split("/").at(-1)}/video.mp4`;
-  const run = async (wrong: boolean, uploaderOnly = false) => {
-    const proc = Bun.spawn(
-      [
-        process.execPath,
-        "-e",
-        `
-      import { downloadVideo } from "./app/media.ts";
-      try {
-        console.log(JSON.stringify(await downloadVideo("https://www.youtube.com/watch?v=abcdefghijk", ${JSON.stringify(output)})));
-      } catch (error) {
-        console.error(error.message);
-        process.exit(1);
-      }
-    `,
-      ],
-      {
-        cwd: process.cwd(),
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH}`,
-          FAKE_WRONG_PATH: wrong ? "1" : "0",
-          FAKE_UPLOADER_ONLY: uploaderOnly ? "1" : "0",
-        },
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    return { stdout, stderr, code };
-  };
-  try {
-    const ok = await run(false);
-    expect(ok.code).toBe(0);
-    expect(JSON.parse(ok.stdout)).toEqual({
+const metadata = (value = {}) =>
+  JSON.stringify(
+    {
       title: "Fixture",
       duration: 10,
-      channel: "Fixture channel",
-    });
-    const fallback = await run(false, true);
-    expect(fallback.code).toBe(0);
-    expect(JSON.parse(fallback.stdout).channel).toBe("Fallback uploader");
-    const bad = await run(true);
-    expect(bad.code).toBe(1);
-    expect(bad.stderr).toContain(
-      "yt-dlp did not create the expected MP4 file.",
-    );
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+      channel: "Channel",
+      filepath: resolve(output),
+      ...value,
+    },
+    null,
+    2,
+  );
+const sample = (info: object, progress: object) =>
+  `YTDLP_WEB_PROGRESS:${JSON.stringify({ phase: "download", info, progress })}\n`;
+const processing = (postprocessor: string) =>
+  `YTDLP_WEB_PROGRESS:${JSON.stringify({ phase: "postprocess", progress: { postprocessor } })}\n`;
+function run(
+  progress: TransferProgress[] = [],
+  signal = new AbortController().signal,
+) {
+  return observe(
+    downloadVideo(url, output, {
+      signal,
+      onProgress: (value) => progress.push(value),
+    }),
+  );
+}
+
+test("real download accepts absolute after_move path, normalizes metadata, and sends production command policy", async () => {
+  const result = run();
+  proc.emitStdout(metadata());
+  proc.exit();
+  expect(await result).toEqual({
+    title: "Fixture",
+    duration: 10,
+    channel: "Channel",
+  });
+  const args = [...command];
+  expect(args[0]).toBe("yt-dlp");
+  expect(args.slice(-2)).toEqual(["--", url]);
+  expect(args[args.indexOf("--output") + 1]).toBe(output);
+  expect(args[args.indexOf("--format") + 1]).toContain(
+    "bv[ext=mp4][vcodec^=avc1][height<=720]+ba[ext=m4a][acodec^=mp4a]",
+  );
+  expect(args[args.indexOf("--format") + 1]).toContain("/b[ext=mp4]");
+  expect(args).toContain("--ignore-config");
+  expect(args).toContain("--merge-output-format");
+  expect(
+    args.filter(
+      (a) =>
+        a.startsWith("download:YTDLP_WEB_PROGRESS:") ||
+        a.startsWith("postprocess:YTDLP_WEB_PROGRESS:"),
+    ),
+  ).toHaveLength(2);
+  expect(proc.stop).toHaveBeenCalledTimes(1);
 });
 
-test("canonicalizes YouTube URLs but rejects local and arbitrary hosts", () => {
-  expect(canonicalVideoUrl("https://youtu.be/abcdefghijk?t=30")).toBe(
-    "https://www.youtube.com/watch?v=abcdefghijk",
+for (const [value, expected] of [
+  [
+    { channel: " ", uploader: "Uploader" },
+    { title: "Fixture", duration: 10, channel: "Uploader" },
+  ],
+  [
+    { channel: null, title: null, duration: "10" },
+    { title: "Untitled video", duration: null, channel: null },
+  ],
+] as const) {
+  test(`normalizes tool metadata through downloadVideo: ${JSON.stringify(value)}`, async () => {
+    const result = run();
+    proc.emitStdout(metadata(value));
+    proc.exit();
+    expect(await result).toEqual(expected);
+  });
+}
+
+for (const [text, message] of [
+  [metadata({ filepath: `${output}.other` }), "expected MP4"],
+  ["", "Live or unavailable"],
+  [`unexpected stdout\n${metadata()}`, "invalid download metadata"],
+  ["{broken", "invalid download metadata"],
+  [metadata({ title: "x".repeat(33_000) }), "output exceeded"],
+  [
+    metadata({ title: "é".repeat(9_000), channel: "é".repeat(9_000) }),
+    "output exceeded",
+  ],
+] as const) {
+  test(`rejects unsafe/invalid download output: ${message} (${text.length} chars)`, async () => {
+    const result = run();
+    proc.emitStdout(text);
+    proc.exit();
+    await expect(result).rejects.toThrow(message);
+    expect(proc.stop).toHaveBeenCalledTimes(1);
+  });
+}
+
+test("stdout transfer progress and stderr postprocessors compose with chunked UTF-8/CRLF/final metadata", async () => {
+  const progress: TransferProgress[] = [];
+  const result = run(progress);
+  const bytes = new TextEncoder().encode(
+    sample(
+      { vcodec: "avc1", acodec: "none" },
+      { downloaded_bytes: 50, total_bytes_estimate: 100, speed: 20 },
+    ) +
+      sample(
+        { vcodec: "none", acodec: "mp4a" },
+        { downloaded_bytes: 5, total_bytes: 10, speed: 30, status: "finished" },
+      ) +
+      sample(
+        { vcodec: "avc1", acodec: "mp4a" },
+        { downloaded_bytes: 7, speed: 3 },
+      ) +
+      sample(
+        { vcodec: "avc1", acodec: "none" },
+        { downloaded_bytes: -1, total_bytes: "NA", speed: "NaN" },
+      ) +
+      "YTDLP_WEB_PROGRESS:not-json\n" +
+      "YTDLP_WEB_PROGRESS:" +
+      "x".repeat(40_000) +
+      "\n" +
+      `YTDLP_WEB_PROGRESS:${"x".repeat(512)}\n`.repeat(120),
   );
-  for (const url of [
+  for (let offset = 0; offset < bytes.length; offset += 13)
+    proc.emitStdout(bytes.slice(offset, offset + 13));
+  await waitFor(
+    async () => progress.length,
+    (count) => count === 4,
+    "four transfer samples",
+  );
+  proc.emitStderr(
+    `${"x".repeat(40_000)}\n${processing("Merger")}${processing("MoveFiles")}`,
+  );
+  await waitFor(
+    async () => progress.length,
+    (count) => count === 6,
+    "postprocessor samples",
+  );
+  // A buffered transfer on the other pipe must not regress postprocessing.
+  proc.emitStdout(
+    sample({ vcodec: "avc1", acodec: "none" }, { downloaded_bytes: 1 }),
+  );
+  const final = new TextEncoder().encode(
+    metadata({ title: "Café" }).replaceAll("\n", "\r\n"),
+  );
+  for (const byte of final) proc.emitStdout(new Uint8Array([byte]));
+  proc.exit();
+  expect((await result).title).toBe("Café");
+  expect(progress).toEqual([
+    {
+      phase: "video",
+      downloadedBytes: 50,
+      totalBytes: 100,
+      totalEstimated: true,
+      speedBytesPerSecond: 20,
+    },
+    {
+      phase: "audio",
+      downloadedBytes: 5,
+      totalBytes: 10,
+      totalEstimated: false,
+      speedBytesPerSecond: null,
+    },
+    {
+      phase: "mp4",
+      downloadedBytes: 7,
+      totalBytes: null,
+      totalEstimated: false,
+      speedBytesPerSecond: 3,
+    },
+    {
+      phase: "video",
+      downloadedBytes: null,
+      totalBytes: null,
+      totalEstimated: false,
+      speedBytesPerSecond: null,
+    },
+    {
+      phase: "merging",
+      downloadedBytes: null,
+      totalBytes: null,
+      totalEstimated: false,
+      speedBytesPerSecond: null,
+    },
+    {
+      phase: "processing",
+      downloadedBytes: null,
+      totalBytes: null,
+      totalEstimated: false,
+      speedBytesPerSecond: null,
+    },
+  ]);
+});
+
+for (const [stderr, message] of [
+  ["ERROR: Sign in to confirm you're not a bot", "bot check"],
+  [
+    "403 Forbidden: host www.google.com:443 is not in the allowlist",
+    "www.google.com",
+  ],
+  ["Requested format is not available", "H.264/AAC"],
+  ["ffmpeg not found", "ffmpeg is required"],
+  ["private tool failure and URL", "yt-dlp could not access"],
+]) {
+  test(`maps external failure safely: ${message}`, async () => {
+    const result = run();
+    proc.emitStderr(`${"x".repeat(40_000)}\n${stderr}`);
+    proc.exit(1);
+    await expect(result).rejects.toThrow(message);
+  });
+}
+
+test("abort triggers one stop and does not complete before safe cleanup", async () => {
+  const controller = new AbortController();
+  const cleanup = deferred();
+  proc.stop.mockImplementation(async () => {
+    proc.exit();
+    await cleanup.promise;
+  });
+  let settled = false;
+  const result = run([], controller.signal).finally(() => {
+    settled = true;
+  });
+  // Observe rejection immediately, even if an assertion fails before release.
+  void result.catch(() => {});
+  try {
+    controller.abort();
+    await Promise.resolve();
+    expect(proc.stop).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+  } finally {
+    cleanup.resolve();
+  }
+  await expect(result).rejects.toMatchObject({ name: "AbortError" });
+});
+
+test("already-aborted never launches; spawn error retains cause", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await expect(run([], controller.signal)).rejects.toMatchObject({
+    name: "AbortError",
+  });
+  expect(launch).not.toHaveBeenCalled();
+  const cause = new Error("ENOENT");
+  launch.mockImplementationOnce(() => {
+    throw cause;
+  });
+  await expect(run()).rejects.toMatchObject({
+    cause,
+    message: "Could not start yt-dlp. Check that its binary is on PATH.",
+  });
+});
+
+test("pipe failure still awaits stop; unconfirmed cleanup overrides cancellation", async () => {
+  const controller = new AbortController();
+  const cause = new Error("EPERM");
+  proc.stop.mockRejectedValue(
+    new DownloadTerminationError("Unsafe cleanup", { cause }),
+  );
+  const result = run([], controller.signal);
+  controller.abort();
+  await expect(result).rejects.toMatchObject({
+    cause,
+    message: "Unsafe cleanup",
+  });
+  expect(proc.stop).toHaveBeenCalledTimes(1);
+  proc.exit();
+  proc = controlledProcess();
+  const failed = run();
+  proc.failStdout(new Error("Broken pipe"));
+  await expect(failed).rejects.toThrow("Broken pipe");
+  expect(proc.stop).toHaveBeenCalledTimes(1);
+});
+
+test("HLS extraction selects best compatible rendition and only forwards permitted headers", async () => {
+  const result = observe(extractHls(url));
+  proc.emitStdout(
+    JSON.stringify({
+      title: "HLS",
+      duration: 20,
+      uploader: "Fallback",
+      formats: [
+        {
+          protocol: "m3u8_native",
+          vcodec: "avc1",
+          height: 360,
+          manifest_url: "https://manifest.googlevideo.com/360.m3u8",
+        },
+        {
+          protocol: "m3u8_native",
+          vcodec: "avc1",
+          height: 720,
+          manifest_url: "https://manifest.googlevideo.com/720.m3u8",
+          http_headers: { "User-Agent": "fixture", Cookie: "secret" },
+        },
+        {
+          protocol: "m3u8_native",
+          vcodec: "avc1",
+          height: 1080,
+          manifest_url: "wrong",
+        },
+        {
+          protocol: "m3u8_native",
+          vcodec: "vp9",
+          height: 720,
+          manifest_url: "wrong",
+        },
+      ],
+    }),
+  );
+  proc.exit();
+  expect(await result).toEqual({
+    title: "HLS",
+    duration: 20,
+    channel: "Fallback",
+    manifest: "https://manifest.googlevideo.com/720.m3u8",
+    headers: { "User-Agent": "fixture" },
+  });
+  expect(spawn).toHaveBeenCalled();
+});
+
+for (const [text, message] of [
+  ["{bad", "invalid HLS metadata"],
+  ["{}", "No H.264 HLS"],
+  ["x".repeat(2_000_001), "output exceeded"],
+]) {
+  test(`HLS extraction rejects ${message}`, async () => {
+    const result = observe(extractHls(url));
+    proc.emitStdout(text ?? "");
+    proc.exit();
+    await expect(result).rejects.toThrow(message ?? "");
+  });
+}
+
+test("canonicalizes only single public HTTPS YouTube videos", () => {
+  expect(canonicalVideoUrl("https://youtu.be/abcdefghijk?t=30")).toBe(url);
+  for (const bad of [
     "https://127.0.0.1/watch?v=abcdefghijk",
     "https://youtube.com.evil/watch?v=abcdefghijk",
     "http://www.youtube.com/watch?v=abcdefghijk",
     "https://youtu.be/short",
-  ]) {
-    expect(() => canonicalVideoUrl(url)).toThrow(InputError);
-  }
+    "https://evil@www.youtube.com/watch?v=abcdefghijk",
+    "https://www.youtube.com/playlist?list=abc",
+  ])
+    expect(() => canonicalVideoUrl(bad)).toThrow(InputError);
 });
 
-test("download parses chunked phase-local progress without retaining an unbounded log", async () => {
-  const dir = join(
-    process.cwd(),
-    "tmp",
-    `download-progress-${crypto.randomUUID()}`,
-  );
-  const bin = join(dir, "bin");
-  await mkdir(bin, { recursive: true });
-  await writeFile(
-    join(bin, "yt-dlp"),
-    `#!${process.execPath}
-const args = process.argv.slice(2);
-const output = args[args.indexOf("--output") + 1];
-// yt-dlp download progress uses stdout; postprocessor hooks use stderr.
-const emit = (info, progress) => console.log("YTDLP_WEB_PROGRESS:" + JSON.stringify({phase:"download",info,progress}));
-process.stdout.write("YTDLP_WEB_PRO");
-await Bun.sleep(5);
-console.log('GRESS:{"phase":"download","info":{"vcodec":"avc1","acodec":"none"},"progress":{"downloaded_bytes":50,"total_bytes_estimate":100,"speed":20}}');
-emit({vcodec:"none",acodec:"mp4a"}, {downloaded_bytes:5,total_bytes:10,speed:null});
-emit({vcodec:"avc1",acodec:"mp4a"}, {downloaded_bytes:7,total_bytes:null,speed:3});
-emit({vcodec:"avc1",acodec:"none"}, {downloaded_bytes:-1,total_bytes:"NA",speed:"NaN"});
-// Optional stdout chatter must not consume the metadata budget.
-console.log("YTDLP_WEB_PROGRESS:not-json");
-console.log("YTDLP_WEB_PROGRESS:" + "x".repeat(40000));
-for (let i=0; i<120; i++) console.log("YTDLP_WEB_PROGRESS:" + "x".repeat(512));
-console.error("x".repeat(40000));
-console.error('YTDLP_WEB_PROGRESS:{"phase":"postprocess","progress":{"status":"started","postprocessor":"Merger"}}');
-console.error('YTDLP_WEB_PROGRESS:{"phase":"postprocess","progress":{"status":"started","postprocessor":"MoveFiles"}}');
-await Bun.write(output, "fixture");
-console.log(JSON.stringify({title:"Fixture",duration:10,filepath:output}, null, 2));
-`,
-    { mode: 0o755 },
-  );
-  const proc = Bun.spawn(
-    [
-      process.execPath,
-      "-e",
-      `
-    import { downloadVideo } from "./app/media.ts";
-    const progress = [];
-    const video = await downloadVideo("https://youtu.be/abcdefghijk", ${JSON.stringify(join(dir, "video.mp4"))}, {
-      signal: new AbortController().signal, onProgress: p => progress.push(p)
-    });
-    console.log(JSON.stringify({ video, progress }));
-  `,
-    ],
-    {
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
-  try {
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    expect(stderr).toBe("");
-    expect(code).toBe(0);
-    const result = JSON.parse(stdout);
-    expect(result.progress).toEqual([
-      {
-        phase: "video",
-        downloadedBytes: 50,
-        totalBytes: 100,
-        totalEstimated: true,
-        speedBytesPerSecond: 20,
-      },
-      {
-        phase: "audio",
-        downloadedBytes: 5,
-        totalBytes: 10,
-        totalEstimated: false,
-        speedBytesPerSecond: null,
-      },
-      {
-        phase: "mp4",
-        downloadedBytes: 7,
-        totalBytes: null,
-        totalEstimated: false,
-        speedBytesPerSecond: 3,
-      },
-      {
-        phase: "video",
-        downloadedBytes: null,
-        totalBytes: null,
-        totalEstimated: false,
-        speedBytesPerSecond: null,
-      },
-      {
-        phase: "merging",
-        downloadedBytes: null,
-        totalBytes: null,
-        totalEstimated: false,
-        speedBytesPerSecond: null,
-      },
-      {
-        phase: "processing",
-        downloadedBytes: null,
-        totalBytes: null,
-        totalEstimated: false,
-        speedBytesPerSecond: null,
-      },
-    ]);
-    expect(result.video.title).toBe("Fixture");
-  } finally {
-    if (proc.exitCode === null) proc.kill("SIGKILL");
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("cancel stops an owned download group, including a TERM-resistant child", async () => {
-  const dir = join(
-    process.cwd(),
-    "tmp",
-    `download-cancel-${crypto.randomUUID()}`,
-  );
-  const bin = join(dir, "bin");
-  await mkdir(bin, { recursive: true });
-  await writeFile(
-    join(bin, "yt-dlp"),
-    `#!/bin/sh
-trap 'wait; exit' TERM
-/bin/sh -c 'trap "" TERM; printf child-ready > "$CHILD_READY"; while true; do printf x >> "$CHILD_WRITES"; sleep 0.02; done' &
-wait
-`,
-    { mode: 0o755 },
-  );
-  const ready = join(dir, "ready");
-  const writes = join(dir, "writes");
-  const proc = Bun.spawn(
-    [
-      process.execPath,
-      "-e",
-      `
-    import { downloadVideo } from "./app/media.ts";
-    const controller = new AbortController();
-    const promise = downloadVideo("https://youtu.be/abcdefghijk", ${JSON.stringify(join(dir, "video.mp4"))}, { signal: controller.signal, onProgress() {} });
-    for (let i=0; !(await Bun.file(${JSON.stringify(ready)}).exists()) && i<100; i++) await Bun.sleep(10);
-    controller.abort();
-    try { await promise; process.exit(1); } catch (error) { console.log(error.name); }
-  `,
-    ],
-    {
-      env: {
-        ...process.env,
-        PATH: `${bin}:${process.env.PATH}`,
-        CHILD_READY: ready,
-        CHILD_WRITES: writes,
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
-  try {
-    const code = await Promise.race([
-      proc.exited,
-      Bun.sleep(4000).then(() => null),
-    ]);
-    expect(code).toBe(0);
-    expect((await new Response(proc.stdout).text()).trim()).toBe("AbortError");
-    expect(await new Response(proc.stderr).text()).toBe("");
-    const before = Bun.file(writes).size;
-    await Bun.sleep(100);
-    expect(Bun.file(writes).size).toBe(before);
-  } finally {
-    if (proc.exitCode === null) proc.kill("SIGKILL");
-    await rm(dir, { recursive: true, force: true });
-  }
-}, 6000);
-
-test("an already-aborted download never spawns yt-dlp", async () => {
-  const controller = new AbortController();
-  controller.abort();
-  await expect(
-    downloadVideo("https://youtu.be/abcdefghijk", "tmp/not-started.mp4", {
-      signal: controller.signal,
-      onProgress() {},
-    }),
-  ).rejects.toMatchObject({ name: "AbortError" });
-});
-
-test("metadata is byte-bounded while non-progress stdout remains strict JSON", async () => {
-  // Exercise the stream boundary directly; enforcing a metadata limit must not
-  // depend on whether this environment permits killing a subprocess group.
-  const progress =
-    'YTDLP_WEB_PROGRESS:{"phase":"download","info":{"vcodec":"avc1","acodec":"none"},"progress":{"downloaded_bytes":5}}\n';
-  for (const metadata of [
-    JSON.stringify({ title: "x".repeat(33_000) }),
-    JSON.stringify(
-      { title: "é".repeat(9_000), channel: "é".repeat(9_000) },
-      null,
-      2,
-    ),
-  ]) {
-    const stream = new Response(progress + metadata).body;
-    if (!stream) throw new Error("Missing fixture stream");
-    await expect(
-      readDownloadOutput(stream, undefined, undefined, true),
-    ).rejects.toThrow("yt-dlp output exceeded the limit for this demo.");
-  }
-  const stream = new Response(
-    `${progress}unexpected stdout\n{"title":"Fixture"}`,
-  ).body;
-  if (!stream) throw new Error("Missing fixture stream");
-  const metadata = await readDownloadOutput(stream, undefined, undefined, true);
-  expect(metadata).toBe('unexpected stdout\n{"title":"Fixture"}');
-  expect(() => JSON.parse(metadata)).toThrow();
-});
+for (const mode of ["download", "extraction"] as const) {
+  test(`${mode} timeout uses its own budget and stops the external process`, async () => {
+    const realSetTimeout = setTimeout;
+    let deadline!: () => void;
+    let budget = 0;
+    const timer = spyOn(globalThis, "setTimeout").mockImplementationOnce(((
+      callback: () => void,
+      ms?: number,
+    ) => {
+      deadline = callback as () => void;
+      budget = ms ?? 0;
+      return realSetTimeout(() => {}, 60_000);
+    }) as typeof setTimeout);
+    const result = mode === "download" ? run() : observe(extractHls(url));
+    void result.catch(() => {});
+    try {
+      expect(budget).toBe(mode === "download" ? 20 * 60_000 : 60_000);
+      deadline();
+      await expect(result).rejects.toThrow("timed out");
+      expect(mode === "download" ? proc.stop : proc.kill).toHaveBeenCalledTimes(
+        1,
+      );
+    } finally {
+      proc.exit();
+      await result.catch(() => {});
+      timer.mockRestore();
+    }
+  });
+}

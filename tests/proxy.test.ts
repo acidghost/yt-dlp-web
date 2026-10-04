@@ -12,7 +12,8 @@ const source = {
 
 test("rejects disallowed manifest hosts and does not follow redirects to other hosts", async () => {
   const called: string[] = [];
-  const upstream = async (url: string) => {
+  const upstream = async (url: string, options: RequestInit) => {
+    expect(options.redirect).toBe("manual");
     called.push(url);
     return new Response(null, {
       status: 302,
@@ -83,4 +84,54 @@ test("rejects video-only playlists before publishing a proxy session", async () 
       ),
   );
   await expect(proxy.prepare("token")).rejects.toThrow("with audio");
+});
+
+test("allowed relative redirects rebase playlist resources without automatic fetch redirects", async () => {
+  const called: string[] = [];
+  const proxy = new ProxySession(source, async (url, options) => {
+    expect(options.redirect).toBe("manual");
+    called.push(url);
+    if (url === source.manifest)
+      return new Response(null, {
+        status: 302,
+        headers: { Location: "/edge/master.m3u8" },
+      });
+    if (url.endsWith("/edge/master.m3u8"))
+      return new Response(
+        '#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aac",NAME="original",DEFAULT=NO,URI="audio.m3u8"\n#EXT-X-STREAM-INF:RESOLUTION=640x360,CODECS="avc1.4d401e,mp4a.40.2",AUDIO="aac"\nvideo.m3u8',
+      );
+    return new Response("#EXTM3U\n#EXTINF:5,\nsegment.ts\n");
+  });
+  await proxy.prepare("token");
+  const master = await (await proxy.serve("token", "0")).text();
+  expect(master).toContain('URI="/api/proxy/token/1"');
+  expect(await (await proxy.serve("token", "1")).text()).toContain(
+    "/api/proxy/token/3",
+  );
+  expect(called).toEqual([
+    source.manifest,
+    "https://manifest.googlevideo.com/edge/master.m3u8",
+    "https://manifest.googlevideo.com/edge/audio.m3u8",
+  ]);
+});
+
+test("redirect chains stop after the permitted three hops", async () => {
+  const called: string[] = [];
+  const proxy = new ProxySession(source, async (url, options) => {
+    expect(options.redirect).toBe("manual");
+    called.push(url);
+    return new Response(null, {
+      status: 302,
+      headers: { Location: `/hop-${called.length}.m3u8` },
+    });
+  });
+  await expect(proxy.prepare("token")).rejects.toThrow(
+    "Too many YouTube media redirects.",
+  );
+  expect(called).toEqual([
+    source.manifest,
+    "https://manifest.googlevideo.com/hop-1.m3u8",
+    "https://manifest.googlevideo.com/hop-2.m3u8",
+    "https://manifest.googlevideo.com/hop-3.m3u8",
+  ]);
 });

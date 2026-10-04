@@ -1,113 +1,125 @@
-import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { expect, mock, spyOn, test } from "bun:test";
+import { EventEmitter } from "node:events";
+import { readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { Library } from "../app/library";
+import { createShutdown, registerSignals } from "../app/lifecycle";
+import { appFixture } from "./support/app";
+import { deferred } from "./support/async";
+import { requestResolve } from "./support/http";
 
-test("SIGTERM stops the HTTP server and exits cleanly", async () => {
-  const dataDir = await mkdtemp(join(tmpdir(), "yt-dlp-web-shutdown-"));
-  const env: Record<string, string | undefined> = {
-    ...process.env,
-    PORT: "3000",
-    HOST: "127.0.0.1",
-    DATA_DIR: dataDir,
-  };
-  delete env.PUBLIC_ORIGIN;
-  const proc = Bun.spawn(["bun", join(import.meta.dir, "../app/index.ts")], {
-    env,
-    stdout: "ignore",
-    stderr: "ignore",
+test("both signals share real application shutdown; staging/SQLite outlive download cleanup", async () => {
+  await using fixture = await appFixture();
+  const started = fixture.gate();
+  const cleanup = fixture.gate();
+  const base = fixture.start({
+    download: async (_url, path, options) => {
+      await writeFile(path, "partial");
+      started.release();
+      await new Promise<void>((resolve) => {
+        if (options?.signal.aborted) resolve();
+        else
+          options?.signal.addEventListener("abort", () => resolve(), {
+            once: true,
+          });
+      });
+      await cleanup.promise;
+      throw new DOMException("Canceled", "AbortError");
+    },
   });
-
+  const response = await requestResolve(base);
+  expect(response.status).toBe(202);
+  await started.promise;
+  const complete = mock();
+  const cancelTimer = mock();
+  const closeDb = spyOn(Library.prototype, "close");
+  const shutdown = createShutdown({
+    app: fixture.app,
+    log: mock(),
+    complete,
+    schedule: (_callback, ms) => {
+      expect(ms).toBe(5000);
+      return cancelTimer;
+    },
+  });
+  const signals = new EventEmitter();
+  const unsubscribe = registerSignals(signals, shutdown);
   try {
-    let ready = false;
-    for (let i = 0; i < 60; i++) {
-      try {
-        ready = (await fetch("http://127.0.0.1:3000/healthz")).ok;
-        if (ready) break;
-      } catch {
-        // Wait for the child to bind.
-      }
-      await Bun.sleep(50);
-    }
-    expect(ready).toBe(true);
-    proc.kill("SIGTERM");
-    const exitCode = await Promise.race([
-      proc.exited,
-      Bun.sleep(2_000).then(() => null),
-    ]);
-    expect(exitCode).toBe(0);
+    signals.emit("SIGTERM");
+    const closing = shutdown("SIGTERM");
+    signals.emit("SIGINT");
+    expect(shutdown("SIGINT")).toBe(closing);
+    expect(complete).not.toHaveBeenCalled();
+    expect(closeDb).not.toHaveBeenCalled();
+    expect(
+      (await readdir(join(fixture.dataDir, "media", "abcdefghijk"))).some(
+        (name) => name.startsWith(".staging-"),
+      ),
+    ).toBe(true);
+    cleanup.release();
+    expect(await closing).toBe("graceful");
+    expect(complete.mock.calls).toEqual([["graceful"]]);
+    expect(cancelTimer).toHaveBeenCalledTimes(1);
+    expect(closeDb).toHaveBeenCalledTimes(1);
+    expect(
+      await readdir(join(fixture.dataDir, "media", "abcdefghijk")),
+    ).toEqual([]);
+    await expect(fetch(`${base}/healthz`)).rejects.toThrow();
   } finally {
-    if (proc.exitCode === null) proc.kill("SIGKILL");
-    await proc.exited;
-    await rm(dataDir, { recursive: true, force: true });
+    cleanup.release();
+    await fixture.app.close();
+    unsubscribe();
+    closeDb.mockRestore();
   }
+  expect(signals.listenerCount("SIGTERM")).toBe(0);
+  expect(signals.listenerCount("SIGINT")).toBe(0);
 });
 
-test("SIGTERM stops active download descendants before removing staging", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "yt-dlp-active-shutdown-"));
-  const bin = join(dir, "bin");
-  const dataDir = join(dir, "data");
-  const heartbeat = join(dir, "heartbeat");
-  await mkdir(bin);
-  const child = `process.on("SIGTERM", () => {}); for (let i=0; i<1000; i++) { await Bun.write(${JSON.stringify(heartbeat)}, String(i)); await Bun.sleep(10); }`;
-  await writeFile(
-    join(bin, "yt-dlp"),
-    `#!${process.execPath}
-const args = process.argv.slice(2);
-await Bun.write(args[args.indexOf("--output") + 1], "partial");
-const child = Bun.spawn([process.execPath, "-e", ${JSON.stringify(child)}], {stdout:"inherit",stderr:"inherit"});
-await child.exited;
-`,
-    { mode: 0o755 },
-  );
-  const env: Record<string, string | undefined> = {
-    ...process.env,
-    PORT: "3000",
-    HOST: "127.0.0.1",
-    DATA_DIR: dataDir,
-    PATH: `${bin}:${process.env.PATH}`,
+test("five-second deadline force-stops HTTP without claiming or abandoning pending cleanup", async () => {
+  const cleanup = deferred();
+  const app = {
+    close: mock(() => cleanup.promise),
+    forceStopHttp: mock(async () => {}),
   };
-  delete env.PUBLIC_ORIGIN;
-  const proc = Bun.spawn(
-    [process.execPath, join(import.meta.dir, "../app/index.ts")],
-    { env, stdout: "ignore", stderr: "ignore" },
-  );
-  try {
-    for (let i = 0; i < 60; i++) {
-      try {
-        if ((await fetch("http://127.0.0.1:3000/healthz")).ok) break;
-      } catch {
-        /* Wait for the child to bind. */
-      }
-      await Bun.sleep(50);
-    }
-    const response = await fetch("http://127.0.0.1:3000/api/resolve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        url: "https://youtu.be/abcdefghijk",
-        mode: "mp4",
-      }),
-    });
-    expect(response.status).toBe(202);
-    for (let i = 0; !(await Bun.file(heartbeat).exists()) && i < 100; i++)
-      await Bun.sleep(10);
-    expect(await Bun.file(heartbeat).exists()).toBe(true);
-    const media = join(dataDir, "media", "abcdefghijk");
-    expect(
-      (await readdir(media)).some((name) => name.startsWith(".staging-")),
-    ).toBe(true);
-    proc.kill("SIGTERM");
-    expect(
-      await Promise.race([proc.exited, Bun.sleep(3_000).then(() => null)]),
-    ).toBe(0);
-    expect(await readdir(media)).toEqual([]);
-    const stopped = await Bun.file(heartbeat).text();
-    await Bun.sleep(100);
-    expect(await Bun.file(heartbeat).text()).toBe(stopped);
-  } finally {
-    if (proc.exitCode === null) proc.kill("SIGKILL");
-    await proc.exited;
-    await rm(dir, { recursive: true, force: true });
-  }
-}, 6_000);
+  let deadline!: () => void;
+  const complete = mock();
+  const log = mock();
+  const shutdown = createShutdown({
+    app,
+    complete,
+    log,
+    schedule: (callback, ms) => {
+      expect(ms).toBe(5000);
+      deadline = callback;
+      return mock();
+    },
+  });
+  const closing = shutdown("SIGTERM");
+  expect(shutdown("SIGINT")).toBe(closing);
+  expect(app.close).toHaveBeenCalledTimes(1);
+  deadline();
+  expect(await closing).toBe("forced");
+  expect(app.forceStopHttp).toHaveBeenCalledTimes(1);
+  expect(complete.mock.calls).toEqual([["forced"]]);
+  // A late failure is observed/logged, not an unhandled rejection or second exit.
+  cleanup.reject(new Error("unconfirmed writer"));
+  await Promise.resolve();
+  expect(log).toHaveBeenCalledTimes(2);
+  expect(complete).toHaveBeenCalledTimes(1);
+});
+
+test("unsafe cleanup is a failed shutdown, not graceful success", async () => {
+  const complete = mock();
+  const shutdown = createShutdown({
+    app: {
+      close: async () => {
+        throw new Error("unsafe");
+      },
+      forceStopHttp: async () => {},
+    },
+    log: mock(),
+    complete,
+  });
+  expect(await shutdown("SIGINT")).toBe("failed");
+  expect(complete.mock.calls).toEqual([["failed"]]);
+});

@@ -1,4 +1,5 @@
-import { type HlsSource, InputError } from "./media";
+import type { HlsSource } from "./media";
+import { InputError } from "./media-errors";
 
 export type UpstreamFetch = (
   url: string,
@@ -74,7 +75,6 @@ async function playlistText(response: Response): Promise<string> {
 }
 
 export class ProxySession {
-  readonly createdAt = Date.now();
   private resources = new Map<string, Resource>();
   private ids = new Map<string, string>();
   private root = "";
@@ -82,6 +82,7 @@ export class ProxySession {
   constructor(
     private source: HlsSource,
     private upstream: UpstreamFetch,
+    readonly createdAt = Date.now(),
   ) {
     this.register(source.manifest);
   }

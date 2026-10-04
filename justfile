@@ -24,12 +24,26 @@ format:
 typecheck:
     ./node_modules/.bin/tsc --noEmit -p tsconfig.json
 
-test:
-    bun test tests/
+# Run the four suites sequentially; browser tests also need port 3000.
+test-all: test-app test-process test-media-tools test-client
 
-# Real yt-dlp/ffmpeg against local media, including cancellation. No network.
-smoke-download:
-    bun scripts/smoke-download.ts
+test-app:
+    bun test --isolate tests/*.test.ts
+
+# Recorded seeds make ordering failures reproducible.
+test-app-shuffle seed="424242":
+    bun test --isolate --randomize --seed={{seed}} tests/*.test.ts
+
+# Genuine POSIX process groups. No app re-execution.
+test-process:
+    bun test tests/os/
+
+# Opt-in real yt-dlp/ffmpeg against local media. No network.
+test-media-tools:
+    bun test --isolate tests/tools/
+
+test-media-tools-shuffle seed="42":
+    bun test --isolate --randomize --seed={{seed}} tests/tools/
 
 test-client: _browser
     node_modules/.bin/playwright test

@@ -1,6 +1,9 @@
+// Browser integration: controlled backend replies isolate DOM/media regressions.
+// Full real-API journeys live in journeys.spec.ts.
 import { copyFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, type Page, test } from "playwright/test";
+import { deferred } from "../tests/support/async";
 
 const url = "https://www.youtube.com/watch?v=abcdefghijk";
 const video = {
@@ -63,10 +66,7 @@ async function loadFixtureMetadata(page: Page): Promise<void> {
 test("a late history response cannot replace a newer refresh", async ({
   page,
 }) => {
-  let releaseFirst: (() => void) | undefined;
-  const firstHeld = new Promise<void>((resolve) => {
-    releaseFirst = resolve;
-  });
+  const { promise: firstHeld, resolve: releaseFirst } = deferred();
   let historyCalls = 0;
   await page.route("**/api/history", async (route) => {
     historyCalls++;
@@ -96,7 +96,7 @@ test("a late history response cannot replace a newer refresh", async ({
     const rows = await response.json();
     return rows[0]?.title === "Older row";
   });
-  releaseFirst?.();
+  releaseFirst();
   await oldResponse;
   await page.evaluate(
     () =>
@@ -644,10 +644,7 @@ for (const mode of ["mp4", "proxy"] as const) {
     const watched: unknown[] = [];
     const progress: { positionSeconds: number }[] = [];
     let holdResolve = false;
-    let releaseResolve: (() => void) | undefined;
-    const resolveHeld = new Promise<void>((resolve) => {
-      releaseResolve = resolve;
-    });
+    const { promise: resolveHeld, resolve: releaseResolve } = deferred();
     await page.route("**/api/history", (route) =>
       route.fulfill({ json: watched.length ? [entry("Fixture video")] : [] }),
     );
@@ -709,8 +706,11 @@ for (const mode of ["mp4", "proxy"] as const) {
     expect(
       await player.evaluate((el, original) => el === original, originalVideo),
     ).toBe(true);
-    // Focused controls must stay visible beyond the normal two-second idle timeout.
-    await page.waitForTimeout(2500);
+    // Exercise Media Chrome's observable inactivity transition, not a presumed
+    // timer duration. Keyboard focus must override hidden controls afterward.
+    await expect(play).toBeFocused();
+    await controller.dispatchEvent("mouseleave");
+    await expect(controller).toHaveAttribute("userinactive");
     await expect(controller.locator(".player-actions")).toHaveCSS(
       "opacity",
       "1",
@@ -894,7 +894,7 @@ for (const mode of ["mp4", "proxy"] as const) {
     await expect(
       controller.locator("media-playback-rate-menu"),
     ).toHaveAttribute("hidden");
-    releaseResolve?.();
+    releaseResolve();
     await expect(page.locator("#status")).toHaveAttribute(
       "data-phase",
       "ready",
