@@ -141,6 +141,66 @@ test("each tab offers its two sorts, orders correctly, and remembers an independ
   await expect(page.locator(".storage-total")).toHaveText("Saved MP4s: 850 B · 4 files");
 });
 
+test("the inline search clear button restores results and returns keyboard focus", async ({
+  page,
+}) => {
+  await library(page);
+  await page.goto("/");
+
+  const query = page.getByLabel("Search title or channel");
+  const clear = page.getByRole("button", { name: "Clear search", exact: true });
+  await expect(clear).toBeHidden();
+  await query.fill("sqlite");
+  await expect(page.locator(".history-item")).toHaveCount(1);
+  await query.press("Tab");
+  await expect(clear).toBeFocused();
+  await page.keyboard.press("Space");
+
+  await expect(query).toHaveValue("");
+  await expect(query).toBeFocused();
+  await expect(clear).toBeHidden();
+  await expect(page.locator(".history-item")).toHaveCount(3);
+});
+
+for (const width of [390, 1280]) {
+  test(`clear buttons sit inside their inputs at ${width}px`, async ({ page }) => {
+    await library(page);
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/");
+    await page.getByLabel("YouTube video URL").fill(history[0]?.url ?? "");
+    await page.getByLabel("Search title or channel").fill("sqlite");
+
+    const urlInput = await page.getByLabel("YouTube video URL").boundingBox();
+    const clearUrl = await page
+      .getByRole("button", { name: "Clear URL", exact: true })
+      .boundingBox();
+    const searchInput = await page.getByLabel("Search title or channel").boundingBox();
+    const clearSearch = await page
+      .getByRole("button", { name: "Clear search", exact: true })
+      .boundingBox();
+
+    expect(clearUrl?.x).toBeGreaterThan(urlInput?.x ?? 0);
+    expect((clearUrl?.x ?? 0) + (clearUrl?.width ?? 0)).toBeLessThanOrEqual(
+      (urlInput?.x ?? 0) + (urlInput?.width ?? 0),
+    );
+    expect(clearUrl?.y).toBeGreaterThanOrEqual(urlInput?.y ?? 0);
+    expect((clearUrl?.y ?? 0) + (clearUrl?.height ?? 0)).toBeLessThanOrEqual(
+      (urlInput?.y ?? 0) + (urlInput?.height ?? 0),
+    );
+    expect(clearSearch?.x).toBeGreaterThan(searchInput?.x ?? 0);
+    expect((clearSearch?.x ?? 0) + (clearSearch?.width ?? 0)).toBeLessThanOrEqual(
+      (searchInput?.x ?? 0) + (searchInput?.width ?? 0),
+    );
+    expect(clearSearch?.y).toBeGreaterThanOrEqual(searchInput?.y ?? 0);
+    expect((clearSearch?.y ?? 0) + (clearSearch?.height ?? 0)).toBeLessThanOrEqual(
+      (searchInput?.y ?? 0) + (searchInput?.height ?? 0),
+    );
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+      width,
+    );
+  });
+}
+
 test("history only shows badges for saved MP4s", async ({ page }) => {
   await library(page);
   await page.goto("/");
@@ -551,6 +611,10 @@ test("search, sort, tabs, refresh and search-field shortcuts preserve the native
   await page.getByRole("button", { name: "Saved MP4s", exact: true }).click();
   await page.getByRole("combobox", { name: "Sort", exact: true }).selectOption("most-recent");
   await page.getByRole("button", { name: "Refresh library" }).click();
+  await page.getByRole("button", { name: "Clear search", exact: true }).click();
+  await expect(query).toBeFocused();
+  await page.getByRole("button", { name: "Clear URL", exact: true }).click();
+  await expect(page.getByLabel("YouTube video URL")).toBeFocused();
 
   expect(
     await page.evaluate((original) => document.querySelector("video") === original, original),

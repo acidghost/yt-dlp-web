@@ -52,6 +52,7 @@ test("Ctrl+K leaves focus on the current control while the URL input is disabled
 }) => {
   await prepare(page, (route) => route.fulfill({ json: active() }));
   await expect(page.getByLabel("YouTube video URL")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Clear URL", exact: true })).toBeDisabled();
 
   const cancel = page.getByRole("button", { name: "Cancel download" });
   await cancel.focus();

@@ -355,6 +355,13 @@ export class VideoApp extends LitElement {
     this.startSeconds = videoStartSeconds(this.url.trim());
   }
 
+  private async clearUrl(): Promise<void> {
+    this.url = "";
+    this.startSeconds = undefined;
+    await this.updateComplete;
+    this.querySelector<HTMLInputElement>("#url")?.focus();
+  }
+
   private resetCopyFeedback(): void {
     window.clearTimeout(this.copyStatusTimer);
     this.copyStatusTimer = undefined;
@@ -1258,17 +1265,28 @@ export class VideoApp extends LitElement {
           <label class="vh" for="url">YouTube video URL</label>
           <label class="vh" for="player-mode">Playback mode</label>
           <div class="player-controls tool-bar">
-            <input
-              id="url"
-              type="url"
-              placeholder="https://www.youtube.com/watch?v=…"
-              autocomplete="url"
-              aria-keyshortcuts="Control+k"
-              required
-              .value=${this.url}
-              @input=${this.changeUrl}
-              ?disabled=${this.busy}
-            >
+            <div class="clearable-input">
+              <input
+                id="url"
+                type="url"
+                placeholder="https://www.youtube.com/watch?v=…"
+                autocomplete="url"
+                aria-keyshortcuts="Control+k"
+                required
+                .value=${this.url}
+                @input=${this.changeUrl}
+                ?disabled=${this.busy}
+              >
+              <button
+                class="input-clear"
+                type="button"
+                aria-label="Clear URL"
+                title="Clear URL"
+                ?hidden=${!this.url}
+                ?disabled=${this.busy}
+                @click=${this.clearUrl}
+              ><span aria-hidden="true">×</span></button>
+            </div>
             <select
               id="player-mode"
               .value=${this.mode}
@@ -1664,15 +1682,26 @@ export class VideoApp extends LitElement {
             @click=${() => this.changeLibraryView("files")}
           >Saved MP4s</button>
         </div>
-        <label class="library-search" for="library-query">Search title or channel
-          <input
-            id="library-query"
-            type="search"
-            placeholder=${isHistory ? "Search watched videos" : "Search saved MP4s"}
-            .value=${this.libraryQuery}
-            @input=${this.changeLibraryQuery}
-          >
-        </label>
+        <div class="library-search">
+          <label for="library-query">Search title or channel</label>
+          <div class="clearable-input">
+            <input
+              id="library-query"
+              type="search"
+              placeholder=${isHistory ? "Search watched videos" : "Search saved MP4s"}
+              .value=${this.libraryQuery}
+              @input=${this.changeLibraryQuery}
+            >
+            <button
+              class="input-clear"
+              type="button"
+              aria-label="Clear search"
+              title="Clear search"
+              ?hidden=${!this.libraryQuery}
+              @click=${this.clearLibrarySearch}
+            ><span aria-hidden="true">×</span></button>
+          </div>
+        </div>
         <label class="library-sort" for="library-sort">Sort
           <select
             id="library-sort"
@@ -1681,12 +1710,6 @@ export class VideoApp extends LitElement {
             ${options.map(([value, label]) => html`<option value=${value} .selected=${value === sort}>${label}</option>`)}
           </select>
         </label>
-        <button
-          class="plain"
-          type="button"
-          ?hidden=${!this.libraryQuery}
-          @click=${this.clearLibrarySearch}
-        >Clear search</button>
       </div>
     `;
   }

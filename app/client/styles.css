@@ -111,9 +111,54 @@ main {
   align-items: center;
 }
 
-.player-controls input {
-  flex: 1 1 24rem;
+.clearable-input {
+  --input-inline-size: 100%;
+  position: relative;
   min-inline-size: 0;
+}
+
+.player-controls .clearable-input {
+  flex: 1 1 24rem;
+}
+
+.clearable-input input {
+  display: block;
+  min-inline-size: 0;
+  min-block-size: 2.75rem;
+  padding-inline-end: 2.75rem;
+}
+
+.clearable-input .input-clear {
+  position: absolute;
+  inset-inline-end: 0.35rem;
+  inset-block-start: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  inline-size: 2rem;
+  block-size: 2rem;
+  min-block-size: 2rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-fg);
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.clearable-input .input-clear:enabled:hover {
+  background: var(--interactive-bg);
+  color: var(--fg);
+}
+
+.clearable-input .input-clear:disabled {
+  opacity: 0.5;
+}
+
+/* Use the same clear button in every browser, without a second native cross. */
+#library-query::-webkit-search-cancel-button {
+  appearance: none;
 }
 
 #url::placeholder {
@@ -596,7 +641,8 @@ main {
   margin-block-start: 1rem;
 }
 
-.library-toolbar label {
+.library-toolbar label,
+.library-search {
   display: grid;
   gap: 0.2rem;
   min-inline-size: 0;
@@ -743,7 +789,8 @@ main {
     align-items: stretch;
   }
 
-  .library-toolbar label {
+  .library-toolbar label,
+  .library-search {
     flex: none;
   }
 

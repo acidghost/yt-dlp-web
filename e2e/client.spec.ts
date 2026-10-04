@@ -273,6 +273,36 @@ test("the integrated speed menu tracks video state and owns its keyboard actions
   );
 });
 
+test("the inline URL clear button empties the field and returns keyboard focus without preparing", async ({
+  page,
+}) => {
+  let preparations = 0;
+  await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/resolve", (route) => {
+    preparations++;
+    return route.fulfill({ json: video });
+  });
+  await page.goto("/");
+
+  const input = page.getByLabel("YouTube video URL");
+  const clear = page.getByRole("button", { name: "Clear URL", exact: true });
+  await expect(clear).toBeHidden();
+  await input.fill(`${url}&t=90`);
+  await expect(clear).toBeVisible();
+  await input.press("Tab");
+  await expect(clear).toBeFocused();
+  await page.keyboard.press("Enter");
+
+  await expect(input).toHaveValue("");
+  await expect(input).toBeFocused();
+  await expect(clear).toBeHidden();
+  await expect(page.locator("#status")).toHaveAttribute("data-phase", "idle");
+  expect(preparations).toBe(0);
+
+  await input.fill(url);
+  await expect(clear).toBeVisible();
+});
+
 test("Ctrl+K focuses the URL input before preparing a video, including from another input", async ({
   page,
 }) => {
