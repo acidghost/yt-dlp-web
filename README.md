@@ -56,6 +56,46 @@ even though it writes no media files.
 Changing modes prepares the selected source **without autoplay**. Switching to
 proxy extracts fresh signed URLs; switching to MP4 reuses an existing download.
 
+### Download progress and cancellation
+
+While preparing a new MP4, the player shows **current-transfer bytes, speed,
+and percentage**. Video and audio download separately, so the numbers reset
+when the labeled phase changes. `≈` marks an estimated total; unknown totals
+use an indeterminate bar. Sizes use binary units (MiB), speed is MiB/s, and
+missing or stale speed is not presented as a current rate. Combining tracks,
+other MP4 processing, and saving the file are separate phases, not “100% ready.”
+
+**Cancel download** stops yt-dlp and its ffmpeg children, then removes unfinished
+staging files. The UI stays busy until cleanup is confirmed. Completed MP4s,
+watch history, and resume positions are not deleted. The brief **Saving MP4**
+commit phase cannot be canceled.
+
+- Requests for the same video share one download. **Cancellation is global for
+  that video:** canceling in one tab stops preparation in all tabs sharing it,
+  but does not stop downloads of other videos.
+- If process termination cannot be confirmed, staging and the busy ID/slot are
+  retained rather than risking a live writer. Stop those processes before
+  restarting the server; the error never claims cleanup succeeded.
+- Closing or navigating away from a preparing tab sends a best-effort global
+  cancellation. Merely hiding the tab does not cancel. If the request is lost,
+  the shared job expires after **five minutes without polling/activity**;
+  another tab's polling keeps its lease alive.
+- Progress connection failures retry automatically. A failed cancel request
+  does **not** mean the process stopped; retry Cancel if needed.
+- At most **two downloads** run concurrently. Jobs live in memory; abandoned
+  staging is also cleaned on startup. Refresh recovery, background jobs, and
+  pause/resume are not supported.
+
+The in-repo client polls status about once a second. For MP4, `POST /api/resolve`
+returns either `200 ResolvedVideo` for a saved file or
+`202 { kind: "preparing", jobToken }` for a shared preparation. Poll
+`GET /api/downloads/:jobToken`; `DELETE` on that URL cancels the shared job.
+Terminal status is retained for two minutes (at most 64 terminal jobs), without
+affecting saved MP4s. The former synchronous MP4 download API is not retained;
+proxy resolves remain unchanged. All job routes retain the existing
+Host/Origin checks, cancellation additionally checks Fetch Metadata, and
+responses are not cached.
+
 ### Player controls
 
 The integrated controls provide play/pause, seeking, mute/volume, playback speed
@@ -271,9 +311,10 @@ Suggested starting resources; measure actual download and ffmpeg use:
 `/data`, and there is no app-level media quota. Restrict runtime egress as
 needed for YouTube, googlevideo, and the extractor's JavaScript challenges.
 
-On SIGTERM/SIGINT, the server stops accepting requests and allows up to five
-seconds for active requests before closing media streams. Restart with the same
-PVC to retain history and downloads.
+On SIGTERM/SIGINT, the server stops accepting requests, aborts active download
+process groups, and awaits staging cleanup within a five-second stop budget.
+Long-lived media streams are then closed. Restart with the same PVC to retain
+history and completed downloads.
 
 ### Deployment checklist
 
@@ -313,7 +354,15 @@ player, hls.js, and missing.css locally from [`app/index.html`](app/index.html).
 | `just typecheck`   | Run strict TypeScript checks                                  |
 | `just test`        | Run Bun tests in `tests/`                                     |
 | `just test-client` | Install Chromium if needed and run Playwright tests in `e2e/` |
+| `just smoke-download` | Real yt-dlp/ffmpeg progress, merging, and cancel against local fixtures |
 | `just build`       | Build `dist/yt-dlp-web` with embedded HTML/JS/CSS             |
 | `just start`       | Build and launch the standalone executable                    |
 
-Keep **port 3000 free** when running either test suite.
+Keep **port 3000 free** when running either test suite. The optional
+`just smoke-download` needs the runtime tools on `PATH`, but no network access:
+it uses local fixture media, not YouTube. Local file URLs are enabled only in
+its fixture wrapper, never in the application's download command. Run it on
+macOS and the target Linux runtime when validating process-group behavior;
+a sandbox may restrict process-group signalling. A failed smoke keeps its
+temporary files for diagnosis rather than removing files that an unconfirmed
+descendant could still be writing.

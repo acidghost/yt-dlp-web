@@ -8,6 +8,7 @@ import {
   canonicalVideoUrl,
   type Download,
   type DownloadedVideo,
+  DownloadTerminationError,
   downloadVideo,
   type ExtractHls,
   extractHls as extractYouTubeHls,
@@ -17,11 +18,13 @@ import {
   type ApiError,
   type ApiResponse,
   type OkResponse,
+  type PreparationSnapshot,
   type ProgressRequest,
   ProgressRequestSchema,
   type ResolvedVideo,
   type ResolveRequest,
   ResolveRequestSchema,
+  TransferProgressSchema,
   type WatchRequest,
   WatchRequestSchema,
 } from "./protocol";
@@ -128,6 +131,8 @@ export function startServer({
   publicOrigin = process.env.PUBLIC_ORIGIN ?? null,
   dataDir = process.env.DATA_DIR ?? "./data",
   sessionTtlMs = 6 * 60 * 60 * 1000,
+  downloadLeaseMs = 5 * 60_000,
+  downloadRetentionMs = 2 * 60_000,
   download = downloadVideo,
   extractHls = extractYouTubeHls,
   upstreamFetch = fetch,
@@ -137,12 +142,25 @@ export function startServer({
   publicOrigin?: string | null;
   dataDir?: string;
   sessionTtlMs?: number;
+  downloadLeaseMs?: number;
+  downloadRetentionMs?: number;
   download?: Download;
   extractHls?: ExtractHls;
   upstreamFetch?: UpstreamFetch;
 } = {}) {
   const proxies = new Map<string, ProxySession>();
-  const preparing = new Map<string, Promise<DownloadedVideo>>();
+  type DownloadJob = {
+    token: string;
+    controller: AbortController;
+    snapshot: PreparationSnapshot;
+    lastActivity: number;
+    updatedAt: number;
+    endedAt: number | null;
+    unsafe: boolean;
+    done: Promise<void>;
+  };
+  const preparing = new Map<string, DownloadJob>();
+  const jobs = new Map<string, DownloadJob>();
   const resolved = new Map<string, ResolvedVideo>();
   // Registers a resolved video's watch token and returns it as JSON.
   const publish = (video: ResolvedVideo): Response => {
@@ -172,6 +190,12 @@ export function startServer({
   if (!Number.isSafeInteger(sessionTtlMs) || sessionTtlMs <= 0)
     throw new Error("The proxy session TTL must be a positive integer.");
 
+  for (const ms of [downloadLeaseMs, downloadRetentionMs])
+    if (!Number.isSafeInteger(ms) || ms <= 0)
+      throw new Error(
+        "Download lease and retention must be positive integers.",
+      );
+
   // A bare http(s) origin, normalized: default ports dropped, no path or creds.
   const configuredOrigin =
     publicOrigin === null || publicOrigin === undefined
@@ -189,19 +213,135 @@ export function startServer({
   const deleting = new Set<string>();
   let activeDownloads = 0;
   let activeExtractions = 0;
+  let shuttingDown = false;
 
-  function startPreparation(id: string, url: string) {
+  function downloadResult(
+    id: string,
+    url: string,
+    video: DownloadedVideo,
+  ): ResolvedVideo {
+    const result: ResolvedVideo = {
+      kind: "download",
+      id,
+      url,
+      token: crypto.randomUUID(),
+      ...video,
+      positionSeconds: library.position(id),
+      stream: `/api/stream/${id}`,
+    };
+    resolved.set(result.token, result);
+    return result;
+  }
+
+  function cancelJob(job: DownloadJob): void {
+    if (
+      job.snapshot.state !== "preparing" ||
+      job.snapshot.phase === "finalizing"
+    )
+      return;
+    job.snapshot = { state: "canceling" };
+    job.controller.abort();
+  }
+
+  function sweepDownloads(): void {
+    const now = Date.now();
+    for (const [token, job] of jobs) {
+      if (job.endedAt !== null && now - job.endedAt >= downloadRetentionMs)
+        jobs.delete(token);
+      else if (
+        job.endedAt === null &&
+        now - job.lastActivity >= downloadLeaseMs
+      )
+        cancelJob(job);
+    }
+    const terminal = [...jobs.values()].filter((job) => job.endedAt !== null);
+    terminal.sort((a, b) => (a.endedAt ?? 0) - (b.endedAt ?? 0));
+    for (const job of terminal.slice(0, Math.max(0, terminal.length - 64)))
+      jobs.delete(job.token);
+  }
+
+  function startPreparation(id: string, url: string): DownloadJob | null {
     if (activeDownloads >= 2) return null;
     activeDownloads++;
-    const preparation = prepareDownload(id, url);
-    preparing.set(id, preparation);
-    void preparation
+    const job: DownloadJob = {
+      token: crypto.randomUUID(),
+      controller: new AbortController(),
+      snapshot: {
+        state: "preparing",
+        phase: "checking",
+        downloadedBytes: null,
+        totalBytes: null,
+        totalEstimated: false,
+        speedBytesPerSecond: null,
+      },
+      lastActivity: Date.now(),
+      updatedAt: Date.now(),
+      endedAt: null,
+      unsafe: false,
+      done: Promise.resolve(),
+    };
+    preparing.set(id, job);
+    jobs.set(job.token, job);
+    job.done = prepareDownload(id, url, job)
+      .then(
+        (video) => {
+          job.snapshot = {
+            state: "ready",
+            video: downloadResult(id, url, video),
+          };
+        },
+        (error) => {
+          job.unsafe = error instanceof DownloadTerminationError;
+          job.snapshot =
+            job.controller.signal.aborted &&
+            error instanceof Error &&
+            error.name === "AbortError"
+              ? { state: "canceled" }
+              : {
+                  state: "error",
+                  error:
+                    error instanceof InputError
+                      ? error.message
+                      : "Could not prepare video.",
+                };
+        },
+      )
       .finally(() => {
-        if (preparing.get(id) === preparation) preparing.delete(id);
-        activeDownloads--;
-      })
-      .catch(() => {}); // The waiting requests report the preparation error.
-    return preparation;
+        // Unconfirmed descendants keep the ID/slot busy. Retain staging and
+        // status for an operator, rather than racing them with deletion/retry.
+        if (!job.unsafe) {
+          job.endedAt = Date.now();
+          if (preparing.get(id) === job) preparing.delete(id);
+          activeDownloads--;
+        }
+        sweepDownloads();
+      });
+    return job;
+  }
+
+  function downloadStatus(token: string, cancel: boolean): Response {
+    sweepDownloads();
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        token,
+      )
+    )
+      return notFound();
+    const job = jobs.get(token);
+    if (!job) return notFound();
+    if (cancel) cancelJob(job);
+    else job.lastActivity = Date.now();
+    const snapshot = job.snapshot;
+    const current =
+      snapshot.state === "preparing" && Date.now() - job.updatedAt > 3_000
+        ? { ...snapshot, speedBytesPerSecond: null }
+        : snapshot;
+    return json(
+      current,
+      cancel && (current.state === "preparing" || current.state === "canceling")
+        ? 202
+        : 200,
+    );
   }
 
   // Allowed same-origin values: the configured ingress origin, or loopback names.
@@ -248,6 +388,8 @@ export function startServer({
 
   async function resolveVideo(body: ResolveRequest) {
     try {
+      if (shuttingDown)
+        return jsonError("Server is stopping. Retry later.", 503);
       const videoUrl = canonicalVideoUrl(body.url);
       const id = videoUrl.slice(-11);
       if (body.mode === "proxy") {
@@ -285,23 +427,36 @@ export function startServer({
       if (deleting.has(id))
         return jsonError("Video is being deleted. Retry later.", 409);
 
-      const preparation = preparing.get(id) ?? startPreparation(id, videoUrl);
-      if (!preparation)
-        return jsonError("Two downloads are already in progress.", 429);
-
-      const video = await preparation;
-
-      return publish({
-        kind: "download",
-        id,
-        url: videoUrl,
-        token: crypto.randomUUID(),
-        title: video.title,
-        channel: video.channel,
-        duration: video.duration,
-        positionSeconds: library.position(id),
-        stream: `/api/stream/${id}`,
-      });
+      let job = preparing.get(id);
+      if (!job) {
+        const file = Bun.file(join(mediaRoot, id, "video.mp4"));
+        const usable = (await file.exists()) && file.size > 0;
+        if (deleting.has(id))
+          return jsonError("Video is being deleted. Retry later.", 409);
+        // Recheck after the filesystem await: another resolve may have started.
+        job = preparing.get(id);
+        if (!job && usable)
+          return json(
+            downloadResult(
+              id,
+              videoUrl,
+              library.metadata(id) ?? {
+                title: "Untitled video",
+                duration: null,
+                channel: null,
+              },
+            ),
+          );
+        if (!job) job = startPreparation(id, videoUrl) ?? undefined;
+      }
+      if (!job) return jsonError("Two downloads are already in progress.", 429);
+      if (job.unsafe)
+        return jsonError(
+          "A download could not be stopped safely. Stop its processes before restarting the server.",
+          503,
+        );
+      job.lastActivity = Date.now();
+      return json({ kind: "preparing", jobToken: job.token }, 202);
     } catch (error) {
       return jsonError(
         error instanceof InputError
@@ -312,33 +467,77 @@ export function startServer({
     }
   }
 
-  async function prepareDownload(id: string, url: string) {
+  async function prepareDownload(id: string, url: string, job: DownloadJob) {
     const dir = join(mediaRoot, id);
     const mp4 = join(dir, "video.mp4");
     const stage = join(dir, `.staging-${crypto.randomUUID()}`);
-    await mkdir(stage, { recursive: true });
+    let cleanupSafe = true;
     try {
-      let video = library.metadata(id);
-      const file = Bun.file(mp4);
-
-      // Download to staging on the same volume, validate, then publish.
-      if (!(await file.exists()) || file.size === 0) {
-        const stagedMp4 = join(stage, "video.mp4");
-        const downloaded = await download(url, stagedMp4);
-        const staged = Bun.file(stagedMp4);
-        if (!(await staged.exists()) || staged.size === 0)
-          throw new InputError("yt-dlp did not create a nonempty MP4 file.");
-
-        await rename(stagedMp4, mp4);
-        video = downloaded;
-        library.remember(id, downloaded);
-      }
-      if (!video)
-        video = { title: "Untitled video", duration: null, channel: null };
-
+      job.controller.signal.throwIfAborted();
+      await mkdir(stage, { recursive: true });
+      job.controller.signal.throwIfAborted();
+      const stagedMp4 = join(stage, "video.mp4");
+      const video = await download(url, stagedMp4, {
+        signal: job.controller.signal,
+        onProgress: (value) => {
+          if (
+            job.snapshot.state !== "preparing" ||
+            job.controller.signal.aborted ||
+            job.snapshot.phase === "finalizing"
+          )
+            return;
+          const progress = TransferProgressSchema.safeParse(value);
+          if (
+            !progress.success ||
+            progress.data.phase === "checking" ||
+            progress.data.phase === "finalizing"
+          )
+            return;
+          job.snapshot = {
+            state: "preparing",
+            ...progress.data,
+            downloadedBytes:
+              progress.data.phase === "merging" ||
+              progress.data.phase === "processing"
+                ? job.snapshot.downloadedBytes
+                : progress.data.downloadedBytes,
+          };
+          job.updatedAt = Date.now();
+        },
+      });
+      job.controller.signal.throwIfAborted();
+      // Synchronous commit boundary: a later cancel must keep the finished MP4.
+      job.snapshot = {
+        state: "preparing",
+        phase: "finalizing",
+        downloadedBytes:
+          job.snapshot.state === "preparing"
+            ? job.snapshot.downloadedBytes
+            : null,
+        totalBytes: null,
+        totalEstimated: false,
+        speedBytesPerSecond: null,
+      };
+      const staged = Bun.file(stagedMp4);
+      if (!(await staged.exists()) || staged.size === 0)
+        throw new InputError("yt-dlp did not create a nonempty MP4 file.");
+      await rename(stagedMp4, mp4);
+      library.remember(id, video);
       return video;
+    } catch (error) {
+      if (error instanceof DownloadTerminationError) cleanupSafe = false;
+      throw error;
     } finally {
-      await rm(stage, { recursive: true, force: true });
+      if (cleanupSafe) {
+        try {
+          await rm(stage, { recursive: true, force: true });
+        } catch {
+          // biome-ignore lint/correctness/noUnsafeFinally: Cleanup failure must override cancellation, never claim that partial files were removed.
+          throw new InputError(
+            "Could not finish download cleanup. Partial files may remain.",
+          );
+        }
+      }
     }
   }
 
@@ -463,6 +662,14 @@ export function startServer({
             : jsonError("Invalid request.", 400);
         }),
       },
+      "/api/downloads/:jobToken": {
+        GET: readRoute((request) =>
+          downloadStatus(request.params.jobToken, false),
+        ),
+        DELETE: mutationRoute((request) =>
+          downloadStatus(request.params.jobToken, true),
+        ),
+      },
       "/api/history": { GET: readRoute(history) },
       // Param routes inline the params so TypeScript infers each handler's
       // BunRequest<route> and typed params, then dispatch to plain arguments.
@@ -547,5 +754,16 @@ export function startServer({
       return notFound();
     },
   });
-  return server;
+  const sweepTimer = setInterval(
+    sweepDownloads,
+    Math.max(20, Math.min(1_000, downloadLeaseMs / 2, downloadRetentionMs / 2)),
+  );
+  sweepTimer.unref();
+  const shutdownDownloads = async (): Promise<void> => {
+    shuttingDown = true;
+    clearInterval(sweepTimer);
+    for (const job of preparing.values()) cancelJob(job);
+    await Promise.all([...preparing.values()].map((job) => job.done));
+  };
+  return Object.assign(server, { shutdownDownloads });
 }

@@ -39,6 +39,39 @@ export const ResolvedVideoSchema = z.discriminatedUnion("kind", [
 ]);
 export type ResolvedVideo = z.infer<typeof ResolvedVideoSchema>;
 
+export const TransferProgressSchema = z.object({
+  phase: z.enum([
+    "checking",
+    "video",
+    "audio",
+    "mp4",
+    "merging",
+    "processing",
+    "finalizing",
+  ]),
+  downloadedBytes: z.number().finite().nonnegative().nullable(),
+  totalBytes: z.number().finite().positive().nullable(),
+  totalEstimated: z.boolean(),
+  speedBytesPerSecond: z.number().finite().nonnegative().nullable(),
+});
+export type TransferProgress = z.infer<typeof TransferProgressSchema>;
+export const PreparingVideoSchema = z.object({
+  kind: z.literal("preparing"),
+  jobToken: z.uuid(),
+});
+export const ResolveResponseSchema = z.union([
+  ResolvedVideoSchema,
+  PreparingVideoSchema,
+]);
+export const PreparationSnapshotSchema = z.discriminatedUnion("state", [
+  TransferProgressSchema.extend({ state: z.literal("preparing") }),
+  z.object({ state: z.literal("canceling") }),
+  z.object({ state: z.literal("canceled") }),
+  z.object({ state: z.literal("error"), error: z.string() }),
+  z.object({ state: z.literal("ready"), video: ResolvedVideoSchema }),
+]);
+export type PreparationSnapshot = z.infer<typeof PreparationSnapshotSchema>;
+
 export const HistoryEntrySchema = z.object({
   id: z.string(),
   url: z.string(),
@@ -54,6 +87,8 @@ export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
 export type ApiResponse =
   | ResolvedVideo
+  | z.infer<typeof PreparingVideoSchema>
+  | PreparationSnapshot
   | HistoryEntry[]
   | ApiError
   | OkResponse;

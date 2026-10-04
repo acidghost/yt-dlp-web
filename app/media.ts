@@ -1,15 +1,23 @@
 import { resolve } from "node:path";
+import type { TransferProgress } from "./protocol";
 
 export class InputError extends Error {}
+// Cleanup is unsafe if a descendant might still be writing into staging.
+export class DownloadTerminationError extends InputError {}
 
 export type DownloadedVideo = {
   title: string;
   duration: number | null;
   channel: string | null;
 };
+export type DownloadOptions = {
+  signal: AbortSignal;
+  onProgress: (progress: TransferProgress) => void;
+};
 export type Download = (
   url: string,
   outputPath: string,
+  options?: DownloadOptions,
 ) => Promise<DownloadedVideo>;
 
 const videoId = /^[a-zA-Z0-9_-]{11}$/;
@@ -108,8 +116,13 @@ export function extractionFailure(stderr: string): InputError {
 async function readLimited(
   stream: ReadableStream<Uint8Array>,
   max: number,
+  signal?: AbortSignal,
 ): Promise<string> {
   const reader = stream.getReader();
+  const cancel = () => {
+    void reader.cancel().catch(() => {});
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
   const decoder = new TextDecoder();
   let total = 0;
   let result = "";
@@ -124,6 +137,7 @@ async function readLimited(
       result += decoder.decode(value, { stream: true });
     }
   } finally {
+    signal?.removeEventListener("abort", cancel);
     reader.releaseLock();
   }
 }
@@ -164,6 +178,250 @@ async function runYtDlp(
   }
 }
 
+const progressPrefix = "YTDLP_WEB_PROGRESS:";
+const emptyProgress = {
+  downloadedBytes: null,
+  totalBytes: null,
+  totalEstimated: false,
+  speedBytesPerSecond: null,
+};
+
+function progressRecord(line: string): TransferProgress | null {
+  if (!line.startsWith(progressPrefix)) return null;
+  try {
+    const record = JSON.parse(line.slice(progressPrefix.length));
+    if (record.phase === "postprocess")
+      return {
+        phase:
+          record.progress?.postprocessor === "Merger"
+            ? "merging"
+            : "processing",
+        ...emptyProgress,
+      };
+    if (record.phase !== "download" || !record.progress || !record.info)
+      return null;
+    const info = record.info;
+    const data = record.progress;
+    const number = (value: unknown): number | null =>
+      typeof value === "number" && Number.isFinite(value) && value >= 0
+        ? value
+        : null;
+    const exact = number(data.total_bytes);
+    const estimate = number(data.total_bytes_estimate);
+    const total = exact && exact > 0 ? exact : estimate;
+    const hasVideo = typeof info.vcodec === "string" && info.vcodec !== "none";
+    const hasAudio = typeof info.acodec === "string" && info.acodec !== "none";
+    return {
+      phase:
+        hasVideo && !hasAudio
+          ? "video"
+          : hasAudio && !hasVideo
+            ? "audio"
+            : "mp4",
+      downloadedBytes: number(data.downloaded_bytes),
+      totalBytes: total && total > 0 ? total : null,
+      totalEstimated: !(exact && exact > 0) && !!total,
+      speedBytesPerSecond:
+        data.status === "finished" ? null : number(data.speed),
+    };
+  } catch {
+    return null; // Optional progress must never suppress valid final metadata.
+  }
+}
+
+// yt-dlp sends download progress to stdout and postprocessor progress to stderr.
+// Bound optional lines/tails, not aggregate progress. Only non-progress stdout
+// counts toward the 32KB metadata limit; keep its pretty-printed JSON intact.
+export async function readDownloadOutput(
+  stream: ReadableStream<Uint8Array>,
+  onProgress?: DownloadOptions["onProgress"],
+  signal?: AbortSignal,
+  collectMetadata = false,
+): Promise<string> {
+  const reader = stream.getReader();
+  const cancel = () => {
+    void reader.cancel().catch(() => {});
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
+  const decoder = new TextDecoder();
+  let pending = "";
+  let dropping = false;
+  let tail = "";
+  let metadata = "";
+  let metadataBytes = 0;
+  const finishLine = (newline: boolean) => {
+    if (!dropping) {
+      const line = pending.trim();
+      if (line.startsWith(progressPrefix)) {
+        const progress = progressRecord(line);
+        if (progress) onProgress?.(progress);
+      } else if (collectMetadata) {
+        const text = pending + (newline ? "\n" : "");
+        metadataBytes += Buffer.byteLength(text);
+        if (metadataBytes > 32_000)
+          throw new InputError(
+            "yt-dlp output exceeded the limit for this demo.",
+          );
+        metadata += text;
+      }
+    }
+    pending = "";
+    dropping = false;
+  };
+  const consume = (text: string) => {
+    tail = (tail + text).slice(-16_000);
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? "";
+      if (!dropping) {
+        const next = pending + line;
+        const optional =
+          !collectMetadata || next.trimStart().startsWith(progressPrefix);
+        if (next.length > (optional ? 16_000 : 32_000)) {
+          if (!optional)
+            throw new InputError(
+              "yt-dlp output exceeded the limit for this demo.",
+            );
+          pending = "";
+          dropping = true;
+        } else pending = next;
+      }
+      if (i < lines.length - 1) finishLine(true);
+    }
+  };
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        consume(decoder.decode());
+        if (pending || dropping) finishLine(false);
+        return collectMetadata ? metadata : tail;
+      }
+      consume(decoder.decode(value, { stream: true }));
+    }
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    reader.releaseLock();
+  }
+}
+
+async function stopDownloadGroup(
+  proc: ReturnType<typeof Bun.spawn>,
+): Promise<void> {
+  const signal = (value: NodeJS.Signals | 0): boolean => {
+    try {
+      process.kill(-proc.pid, value);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+      throw new DownloadTerminationError(
+        "Could not stop the download process group safely. Partial files may remain.",
+      );
+    }
+  };
+  const wait = async (ms: number): Promise<boolean> => {
+    const deadline = Date.now() + ms;
+    while (signal(0)) {
+      if (Date.now() >= deadline) return false;
+      await Bun.sleep(25);
+    }
+    return true;
+  };
+  if (signal("SIGTERM") && !(await wait(400))) {
+    signal("SIGKILL");
+    if (!(await wait(1_500)))
+      throw new DownloadTerminationError(
+        "Could not confirm download process cleanup. Partial files may remain.",
+      );
+  }
+  await proc.exited;
+}
+
+// Separate from HLS extraction: own a process group so cancel and timeout also
+// stop ffmpeg, and await termination before the server removes staging.
+async function runDownload(
+  args: string[],
+  options?: DownloadOptions,
+): Promise<string> {
+  options?.signal.throwIfAborted();
+  if (process.platform !== "darwin" && process.platform !== "linux")
+    throw new InputError("MP4 downloads require macOS or Linux.");
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = Bun.spawn(["yt-dlp", ...args], {
+      detached: true,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  } catch {
+    throw new InputError(
+      "Could not start yt-dlp. Check that its binary is on PATH.",
+    );
+  }
+  const reads = new AbortController();
+  let rejectStop!: (error: unknown) => void;
+  const stopFailed = new Promise<never>((_resolve, reject) => {
+    rejectStop = reject;
+  });
+  let stopping: Promise<void> | undefined;
+  const stop = () => {
+    if (!stopping) {
+      stopping = stopDownloadGroup(proc);
+      void stopping.catch(rejectStop);
+    }
+  };
+  options?.signal.addEventListener("abort", stop, { once: true });
+  if (options?.signal.aborted) stop();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    stop();
+  }, 20 * 60_000);
+  // Pipes have independent delivery order. Do not let a buffered transfer
+  // sample regress the UI after postprocessing has already started.
+  let postprocessing = false;
+  const onProgress = (progress: TransferProgress) => {
+    const processing =
+      progress.phase === "merging" || progress.phase === "processing";
+    if (postprocessing && !processing) return;
+    postprocessing ||= processing;
+    options?.onProgress(progress);
+  };
+  try {
+    const [stdout, stderr, exitCode] = await Promise.race([
+      Promise.all([
+        readDownloadOutput(
+          proc.stdout as ReadableStream<Uint8Array>,
+          onProgress,
+          reads.signal,
+          true,
+        ),
+        readDownloadOutput(
+          proc.stderr as ReadableStream<Uint8Array>,
+          onProgress,
+          reads.signal,
+        ),
+        proc.exited,
+      ]),
+      stopFailed,
+    ]);
+    options?.signal.throwIfAborted();
+    if (timedOut)
+      throw new InputError("The download timed out after 20 minutes.");
+    if (exitCode !== 0) throw extractionFailure(stderr);
+    return stdout;
+  } finally {
+    clearTimeout(timer);
+    options?.signal.removeEventListener("abort", stop);
+    stop();
+    try {
+      await stopping;
+    } finally {
+      reads.abort();
+    }
+  }
+}
+
 function parseJson<T>(stdout: string, invalidMessage: string): T {
   try {
     return JSON.parse(stdout) as T;
@@ -194,11 +452,19 @@ function channelName(info: {
   return null;
 }
 
-export const downloadVideo: Download = async (url, outputPath) => {
-  const stdout = await runYtDlp(
+export const downloadVideo: Download = async (url, outputPath, options) => {
+  const stdout = await runDownload(
     [
       ...commonArgs,
-      "--no-progress",
+      "--quiet",
+      "--progress",
+      "--newline",
+      "--progress-delta",
+      "1",
+      "--progress-template",
+      'download:YTDLP_WEB_PROGRESS:{"phase":"download","info":%(info.{format_id,vcodec,acodec})j,"progress":%(progress.{status,downloaded_bytes,total_bytes,total_bytes_estimate,speed})j}',
+      "--progress-template",
+      'postprocess:YTDLP_WEB_PROGRESS:{"phase":"postprocess","progress":%(progress.{status,postprocessor})j}',
       "--format",
       downloadFormat,
       "--merge-output-format",
@@ -210,11 +476,7 @@ export const downloadVideo: Download = async (url, outputPath) => {
       "--",
       url,
     ],
-    {
-      stdoutMax: 32_000,
-      timeoutMs: 20 * 60_000,
-      timeoutMessage: "The download timed out after 20 minutes.",
-    },
+    options,
   );
 
   if (!stdout.trim())

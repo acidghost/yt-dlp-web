@@ -5,13 +5,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Library } from "../app/library";
 import { canonicalVideoUrl, type Download, InputError } from "../app/media";
-import { HistoryListSchema, ResolvedVideoSchema } from "../app/protocol";
+import {
+  HistoryListSchema,
+  PreparationSnapshotSchema,
+  PreparingVideoSchema,
+  ResolvedVideoSchema,
+} from "../app/protocol";
 import { startServer } from "../app/server";
 
 const url = "https://www.youtube.com/watch?v=abcdefghijk";
 let server: ReturnType<typeof startServer> | undefined;
 let testDir: string;
 afterEach(async () => {
+  await server?.shutdownDownloads();
   server?.stop(true);
   server = undefined;
   if (testDir) await rm(testDir, { recursive: true, force: true });
@@ -90,16 +96,40 @@ async function launch(
   });
   return `http://127.0.0.1:${server.port}`;
 }
-function resolve(
+// Existing history/stream tests await preparation through the real job API.
+// The asynchronous response and cancellation contract have dedicated regressions.
+async function complete(
+  base: string,
+  response: Response,
+  headers = {},
+): Promise<Response> {
+  if (response.status !== 202) return response;
+  const { jobToken } = PreparingVideoSchema.parse(await response.json());
+  for (let i = 0; i < 500; i++) {
+    const read = await fetch(`${base}/api/downloads/${jobToken}`, { headers });
+    expect(read.status).toBe(200);
+    const snapshot = PreparationSnapshotSchema.parse(await read.json());
+    if (snapshot.state === "ready") return Response.json(snapshot.video);
+    if (snapshot.state === "error")
+      return Response.json({ error: snapshot.error }, { status: 502 });
+    await Bun.sleep(5);
+  }
+  throw new Error("Preparation did not finish");
+}
+async function resolve(
   base: string,
   videoUrl = url,
   headers: Record<string, string> = {},
 ) {
-  return fetch(`${base}/api/resolve`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...headers },
-    body: JSON.stringify({ url: videoUrl }),
-  });
+  return complete(
+    base,
+    await fetch(`${base}/api/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify({ url: videoUrl }),
+    }),
+    headers,
+  );
 }
 
 test("validates only single YouTube URLs", () => {
@@ -140,13 +170,7 @@ test("repeated native MP4 requests reuse the saved file", async () => {
     await writeFile(path, "abcdefghij");
     return { title: "Fixture", channel: null, duration: 10 };
   });
-  const mp4 = await (
-    await fetch(`${base}/api/resolve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, mode: "mp4" }),
-    })
-  ).json();
+  const mp4 = await (await resolve(base)).json();
   expect(mp4.stream).toBe("/api/stream/abcdefghijk");
   expect(downloads).toBe(1);
   await watched(base, mp4.id, mp4.token);
@@ -176,12 +200,7 @@ test("concurrent native MP4 requests share one download", async () => {
     await writeFile(path, "abcdefghij");
     return { title: "Fixture", channel: null, duration: 10 };
   });
-  const request = () =>
-    fetch(`${base}/api/resolve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, mode: "mp4" }),
-    });
+  const request = () => resolve(base);
   const mp4 = request();
   await Bun.sleep(5);
   const replay = request();
@@ -351,9 +370,22 @@ test("download failures are reported and never create a playable session", async
   const base = await launch(async () => {
     throw new InputError("Download failed.");
   });
-  const response = await resolve(base);
-  expect(response.status).toBe(400);
-  expect((await response.json()).error).toBe("Download failed.");
+  const response = await fetch(`${base}/api/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url, mode: "mp4" }),
+  });
+  expect(response.status).toBe(202);
+  const { jobToken } = PreparingVideoSchema.parse(
+    await response.clone().json(),
+  );
+  expect((await complete(base, response)).status).toBe(502);
+  const snapshot = await fetch(`${base}/api/downloads/${jobToken}`);
+  expect(snapshot.status).toBe(200);
+  expect(await snapshot.json()).toEqual({
+    state: "error",
+    error: "Download failed.",
+  });
 });
 
 test("rejects malformed JSON shapes before preparing or recording a watch", async () => {
@@ -428,6 +460,7 @@ test("saves playback position for both modes and retains it near the end", async
   expect((await watched(base, proxy.id, proxy.token)).status).toBe(200);
   expect((await history(base))[0].positionSeconds).toBe(12);
 
+  await server?.shutdownDownloads();
   server?.stop(true);
   const restarted = await launch(undefined, true, true);
   const freshProxy = await (await proxyResolve(restarted)).json();
@@ -462,6 +495,7 @@ test("resets progress without a playback token and preserves history and files a
   expect((await history(base))[0]).toEqual({ ...before, positionSeconds: 0 });
   expect((await reset(video.id)).status).toBe(200);
 
+  await server?.shutdownDownloads();
   server?.stop(true);
   const restarted = await launch(undefined, false, true);
   expect((await history(restarted))[0]).toEqual({
@@ -501,6 +535,7 @@ test("marks history fully watched using trusted duration without a playback toke
     positionSeconds: video.duration,
   });
 
+  await server?.shutdownDownloads();
   server?.stop(true);
   const restarted = await launch(undefined, false, true);
   expect((await history(restarted))[0]).toEqual({
@@ -576,6 +611,7 @@ test("history is written only for a successfully resolved, playing proxy; surviv
     mp4: { sizeBytes: null },
   });
   expect(Number.isNaN(Date.parse(firstRow.lastWatchedAt))).toBe(false);
+  await server?.shutdownDownloads();
   server?.stop(true);
   const restarted = await launch(undefined, true, true);
   expect(await history(restarted)).toEqual(rows);
@@ -615,6 +651,7 @@ test("download history checks files, validates watch token and ID, and preserves
     duration: 10,
     mp4: { sizeBytes: 10 },
   });
+  await server?.shutdownDownloads();
   server?.stop(true);
   const restarted = await launch(undefined, false, true);
   expect(await history(restarted)).toEqual(rows);
@@ -698,6 +735,7 @@ test("downloads reuse stable media across requests and restart; ranges and HEAD 
   expect((await resolve(base)).status).toBe(200);
   expect(downloads).toBe(1);
   expect(first.stream).toBe("/api/stream/abcdefghijk");
+  await server?.shutdownDownloads();
   server?.stop(true);
   const restarted = await launch(download, false, true);
   const replay = await (await resolve(restarted)).json();
@@ -728,6 +766,7 @@ test("failed downloads remove staging, and startup clears abandoned staging with
   await mkdir(join(mediaDir, abandoned));
   await mkdir(join(testDir, "tmp"));
   await writeFile(join(testDir, "tmp", "legacy.mp4"), "keep");
+  await server?.shutdownDownloads();
   server?.stop(true);
   await launch(undefined, false, true);
   expect(await readdir(mediaDir)).not.toContain(abandoned);
@@ -846,14 +885,17 @@ test("handoff modes map to their preparation requests without recording a watch"
     );
     if (!handoff || "error" in handoff)
       throw new Error("Invalid fixture handoff");
-    const response = await fetch(`${base}/api/resolve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        url: handoff.url,
-        mode: handoff.mode === "mp4" ? "mp4" : resolveKind(handoff.mode),
+    const response = await complete(
+      base,
+      await fetch(`${base}/api/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: handoff.url,
+          mode: handoff.mode === "mp4" ? "mp4" : resolveKind(handoff.mode),
+        }),
       }),
-    });
+    );
     expect(response.status).toBe(200);
     const result = await response.json();
     if (mode === null) expect(result.hls).toStartWith("/api/proxy/");
@@ -1004,12 +1046,16 @@ test("PUBLIC_ORIGIN admits only its host for reads and mutations", async () => {
 
 test("no-Origin browser attempts and cross-site fetch metadata on mutations are denied", async () => {
   const base = await launch();
-  const post = (headers: Record<string, string>) =>
-    fetch(`${base}/api/resolve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
-      body: JSON.stringify({ url }),
-    });
+  const post = async (headers: Record<string, string>) =>
+    complete(
+      base,
+      await fetch(`${base}/api/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...headers },
+        body: JSON.stringify({ url }),
+      }),
+      headers,
+    );
   expect((await post({ "Sec-Fetch-Site": "cross-site" })).status).toBe(403);
   expect((await post({ "Sec-Fetch-Site": "same-site" })).status).toBe(403);
   expect((await post({ "Sec-Fetch-Site": "same-origin" })).status).toBe(200);

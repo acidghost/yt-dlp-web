@@ -313,6 +313,129 @@ main {
   border-radius: 0;
 }
 
+/* The preparation panel lives in Media Chrome's public centered slot, not its
+   Shadow DOM. Reserve the bottom controls' two rows (one on large players). */
+.player-controller:has(> .download-overlay) {
+  min-block-size: 25rem;
+}
+
+.download-overlay {
+  position: absolute;
+  inset: 0 0 5.5rem;
+  display: grid;
+  place-items: safe center;
+  overflow: auto;
+  padding: 1rem;
+  box-sizing: border-box;
+  line-height: 1.5;
+  color-scheme: light dark;
+}
+
+.player-controller[breakpointlg] .download-overlay {
+  inset-block-end: 3rem;
+}
+
+.download-progress {
+  inline-size: min(100%, 30rem);
+  min-inline-size: 0;
+  box-sizing: border-box;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--graphical-fg);
+  border-radius: var(--border-radius);
+  background: var(--box-bg);
+  color: var(--fg);
+  text-align: start;
+}
+
+.download-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.download-top > div {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.download-phase {
+  display: block;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Match missing.css's nested .<big> specificity; this later rule keeps 44px. */
+.download-top .plain {
+  min-block-size: 2.75rem;
+  flex: none;
+}
+
+.download-top button[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.download-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin-block-start: 0.6rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.download-progress progress {
+  appearance: none;
+  display: block;
+  inline-size: 100%;
+  block-size: 6px;
+  border: 0;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--graphical-fg);
+  margin-block: 0.7rem 0;
+}
+
+.download-progress progress::-webkit-progress-bar {
+  background: var(--graphical-fg);
+}
+
+.download-progress progress::-webkit-progress-value {
+  background: var(--accent);
+}
+
+.download-progress progress::-moz-progress-bar {
+  background: var(--accent);
+}
+
+.download-progress progress:not([value]) {
+  background: repeating-linear-gradient(
+    115deg,
+    var(--graphical-fg) 0 14px,
+    var(--accent) 14px 28px
+  );
+}
+
+.download-progress progress:not([value])::-webkit-progress-bar {
+  background: inherit;
+}
+
+.download-progress progress[hidden],
+.download-top button[hidden] {
+  display: none;
+}
+
+.download-support {
+  color: var(--muted-fg);
+  font-size: 0.9rem;
+  margin-block: 0.6rem 0;
+}
+
+.player-controller:fullscreen:has(> .download-overlay),
+.player-controller[mediaisfullscreen]:has(> .download-overlay) {
+  min-block-size: 0;
+}
+
 .player-shortcuts {
   margin: 0.75rem 0 0;
   font-size: 0.9rem;

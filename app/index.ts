@@ -29,7 +29,7 @@ async function shutdown(signal: string): Promise<void> {
     process.exit(0);
   }, 5_000);
   try {
-    await server.stop();
+    await Promise.all([server.shutdownDownloads(), server.stop()]);
   } finally {
     clearTimeout(deadline);
     process.exit(0);

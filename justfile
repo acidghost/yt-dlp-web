@@ -27,6 +27,10 @@ typecheck:
 test:
     bun test tests/
 
+# Real yt-dlp/ffmpeg against local media, including cancellation. No network.
+smoke-download:
+    bun scripts/smoke-download.ts
+
 test-client: _browser
     node_modules/.bin/playwright test
 

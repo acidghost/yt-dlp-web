@@ -8,10 +8,12 @@ import {
   type HistoryEntry,
   HistoryListSchema,
   OkResponseSchema,
+  type PreparationSnapshot,
+  PreparationSnapshotSchema,
   type ProgressRequest,
   type ResolvedVideo,
-  ResolvedVideoSchema,
   type ResolveRequest,
+  ResolveResponseSchema,
   type WatchRequest,
 } from "../protocol";
 import {
@@ -24,7 +26,22 @@ import {
 import { controlPlayer } from "./player-keys";
 import { fullyWatched, resumePosition } from "./watch-progress";
 
-type Phase = "idle" | "extracting" | "downloading" | "ready" | "error";
+type Phase =
+  | "idle"
+  | "extracting"
+  | "downloading"
+  | "ready"
+  | "error"
+  | "canceled";
+const downloadPhases = {
+  checking: "Checking video…",
+  video: "Downloading video",
+  audio: "Downloading audio",
+  mp4: "Downloading MP4",
+  merging: "Combining audio and video…",
+  processing: "Processing MP4…",
+  finalizing: "Saving MP4…",
+};
 type Notice = { phase: Phase; text: string };
 const HISTORY_CHUNK_SIZE = 12;
 
@@ -60,6 +77,16 @@ export class VideoApp extends LitElement {
     text: "Paste a public YouTube video URL to get started.",
   };
   @state() private source: ResolvedVideo | null = null;
+  @state() private preparation: PreparationSnapshot | null = null;
+  @state() private progressConnectionLost = false;
+  @state() private cancelPending = false;
+  @state() private cancelError = "";
+  @state() private jobToken: string | null = null;
+  private preparationGeneration = 0;
+  private preparationFocus: Element | null = null;
+  private pollTimer: number | undefined;
+  private pollController: AbortController | null = null;
+  private pollFailures = 0;
   @state() private history: HistoryEntry[] = [];
   @state() private historyError = "";
   @state() private widePlayer = false;
@@ -115,9 +142,13 @@ export class VideoApp extends LitElement {
       passive: true,
     });
     window.addEventListener("resize", this.updateBackToPlayer);
+    window.addEventListener("pagehide", this.cancelOnExit);
+    window.addEventListener("pageshow", this.resumePreparation);
     document.addEventListener("visibilitychange", this.saveOnHide);
     document.addEventListener("keydown", this.handlePlayerKey);
     void this.loadHistory();
+    if (this.jobToken)
+      void this.pollPreparation(this.preparationGeneration, this.jobToken);
   }
 
   override firstUpdated(): void {
@@ -273,6 +304,15 @@ export class VideoApp extends LitElement {
     }
 
     const focused = this.ownerDocument.activeElement;
+    this.preparationFocus = focused;
+    const generation = ++this.preparationGeneration;
+    this.clearPoll();
+    this.jobToken = null;
+    this.preparation = null;
+    this.progressConnectionLost = false;
+    this.cancelPending = false;
+    this.cancelError = "";
+    this.pollFailures = 0;
     this.saveProgress(true);
     this.source = null;
     this.resetPlayer();
@@ -283,7 +323,7 @@ export class VideoApp extends LitElement {
         ? { phase: "extracting", text: "Extracting YouTube HLS tracks…" }
         : {
             phase: "downloading",
-            text: "Checking saved files, downloading MP4 if needed…",
+            text: downloadPhases.checking,
           };
 
     try {
@@ -295,6 +335,7 @@ export class VideoApp extends LitElement {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
+        signal: AbortSignal.timeout(10_000),
       });
       const payload: unknown = await response.json().catch(() => null);
       if (!response.ok) {
@@ -303,20 +344,39 @@ export class VideoApp extends LitElement {
           failure.success ? failure.data.error : "Could not prepare video.",
         );
       }
-      const result = ResolvedVideoSchema.safeParse(payload);
-      if (!result.success || result.data.kind !== kind)
+      const result = ResolveResponseSchema.safeParse(payload);
+      if (
+        !result.success ||
+        (result.data.kind !== kind &&
+          !(kind === "download" && result.data.kind === "preparing"))
+      )
         throw new Error("Server returned an invalid video response.");
-
-      this.source = result.data;
-      this.attachReady();
-      void this.loadHistory();
+      if (generation !== this.preparationGeneration || !this.isConnected) {
+        if (result.data.kind === "preparing")
+          this.cancelKeepalive(result.data.jobToken);
+        return;
+      }
+      if (result.data.kind === "preparing") {
+        this.jobToken = result.data.jobToken;
+        void this.pollPreparation(generation, this.jobToken);
+      } else {
+        this.source = result.data;
+        this.attachReady();
+        void this.loadHistory();
+      }
     } catch (error) {
-      this.fail(
-        error instanceof Error ? error.message : "Could not prepare video.",
-      );
+      if (generation === this.preparationGeneration && this.isConnected)
+        this.fail(
+          error instanceof Error && error.name === "TimeoutError"
+            ? "Preparation request timed out. A download may still be running; retry preparation."
+            : error instanceof Error
+              ? error.message
+              : "Could not prepare video.",
+        );
     } finally {
       await this.updateComplete;
       if (
+        generation === this.preparationGeneration &&
         focused instanceof HTMLElement &&
         focused.isConnected &&
         this.ownerDocument.activeElement === this.ownerDocument.body
@@ -324,6 +384,209 @@ export class VideoApp extends LitElement {
         focused.focus();
     }
   }
+
+  private clearPoll(): void {
+    window.clearTimeout(this.pollTimer);
+    this.pollTimer = undefined;
+    this.pollController?.abort();
+    this.pollController = null;
+  }
+
+  private activePreparation(generation: number, token: string): boolean {
+    return (
+      this.isConnected &&
+      generation === this.preparationGeneration &&
+      token === this.jobToken
+    );
+  }
+
+  private finishPreparation(): void {
+    this.clearPoll();
+    this.jobToken = null;
+    this.preparation = null;
+    this.cancelPending = false;
+    this.cancelError = "";
+    this.progressConnectionLost = false;
+  }
+
+  private applyPreparation(snapshot: PreparationSnapshot): void {
+    this.preparation = snapshot;
+    this.cancelPending = false;
+    this.progressConnectionLost = false;
+    if (snapshot.state === "preparing") {
+      this.notice = {
+        phase: "downloading",
+        text: downloadPhases[snapshot.phase],
+      };
+    } else if (snapshot.state === "canceling") {
+      this.cancelError = "";
+      this.notice = {
+        phase: "downloading",
+        text: "Canceling download… Removing partial files.",
+      };
+    } else {
+      const generation = this.preparationGeneration;
+      const canceled = snapshot.state === "canceled";
+      const focused = canceled
+        ? this.querySelector<HTMLButtonElement>(
+            'button[aria-label="Prepare video"]',
+          )
+        : this.preparationFocus;
+      this.preparationFocus = null;
+      this.finishPreparation();
+      if (snapshot.state === "ready" && snapshot.video.kind === "download") {
+        this.source = snapshot.video;
+        this.attachReady();
+        void this.loadHistory();
+      } else if (snapshot.state === "canceled") {
+        this.notice = {
+          phase: "canceled",
+          text: "Download canceled. Partial files removed.",
+        };
+      } else {
+        this.fail(
+          snapshot.state === "error"
+            ? snapshot.error
+            : "Server returned an invalid video response.",
+        );
+      }
+      // Prepare and the outcome notice are outside the fullscreen target.
+      // Leave an empty fullscreen player on cancellation/failure, not on ready.
+      const exit =
+        !this.source &&
+        this.ownerDocument.fullscreenElement ===
+          this.querySelector("media-controller")
+          ? this.ownerDocument.exitFullscreen().catch(() => {})
+          : Promise.resolve();
+      void Promise.all([this.updateComplete, exit]).then(() => {
+        if (
+          generation === this.preparationGeneration &&
+          focused instanceof HTMLElement &&
+          focused.isConnected &&
+          (canceled ||
+            this.ownerDocument.activeElement === this.ownerDocument.body)
+        ) {
+          const fullscreen = this.ownerDocument.fullscreenElement;
+          if (fullscreen && !fullscreen.contains(focused))
+            (this.source
+              ? this.player
+              : this.querySelector<HTMLElement>("media-fullscreen-button")
+            )?.focus();
+          else focused.focus();
+        }
+      });
+    }
+  }
+
+  private async pollPreparation(
+    generation: number,
+    token: string,
+  ): Promise<void> {
+    if (!this.activePreparation(generation, token)) return;
+    const controller = new AbortController();
+    this.pollController = controller;
+    try {
+      const response = await fetch(`/api/downloads/${token}`, {
+        signal: AbortSignal.any([
+          controller.signal,
+          AbortSignal.timeout(10_000),
+        ]),
+      });
+      if (!this.activePreparation(generation, token)) return;
+      if (response.status === 404) {
+        this.applyPreparation({
+          state: "error",
+          error:
+            "Download status expired or the server restarted. Prepare video again.",
+        });
+        return;
+      }
+      if (!response.ok) throw new Error("Progress unavailable");
+      const snapshot = PreparationSnapshotSchema.parse(await response.json());
+      if (!this.activePreparation(generation, token)) return;
+      this.pollFailures = 0;
+      this.applyPreparation(snapshot);
+    } catch {
+      if (!this.activePreparation(generation, token)) return;
+      this.pollFailures++;
+      this.progressConnectionLost = true;
+      this.notice = {
+        phase: "downloading",
+        text: "Progress connection lost. Reconnecting…",
+      };
+    } finally {
+      if (this.pollController === controller) this.pollController = null;
+    }
+    if (this.activePreparation(generation, token)) {
+      const delay = Math.min(
+        8_000,
+        1_000 * 2 ** Math.min(this.pollFailures, 3),
+      );
+      this.pollTimer = window.setTimeout(
+        () => void this.pollPreparation(generation, token),
+        delay,
+      );
+    }
+  }
+
+  private async cancelDownload(): Promise<void> {
+    const token = this.jobToken;
+    if (
+      !token ||
+      this.cancelPending ||
+      this.preparation?.state === "canceling" ||
+      (this.preparation?.state === "preparing" &&
+        this.preparation.phase === "finalizing")
+    )
+      return;
+    // Invalidate any in-flight GET before sending DELETE; old ready replies
+    // must not attach a source over a cancellation or a later preparation.
+    const generation = ++this.preparationGeneration;
+    this.clearPoll();
+    this.cancelPending = true;
+    this.cancelError = "";
+    this.notice = { phase: "downloading", text: "Canceling download…" };
+    try {
+      const response = await fetch(`/api/downloads/${token}`, {
+        method: "DELETE",
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) throw new Error("Could not cancel");
+      const snapshot = PreparationSnapshotSchema.parse(await response.json());
+      if (!this.activePreparation(generation, token)) return;
+      this.applyPreparation(snapshot);
+    } catch {
+      if (!this.activePreparation(generation, token)) return;
+      this.cancelError =
+        "Could not cancel download. It may still be running; try again.";
+      this.notice = { phase: "downloading", text: this.cancelError };
+      this.progressConnectionLost = true;
+    } finally {
+      if (generation === this.preparationGeneration) this.cancelPending = false;
+      if (this.activePreparation(generation, token))
+        void this.pollPreparation(generation, token);
+    }
+  }
+
+  private cancelKeepalive(token: string): void {
+    void fetch(`/api/downloads/${token}`, {
+      method: "DELETE",
+      keepalive: true,
+    }).catch(() => {});
+  }
+
+  private readonly cancelOnExit = (): void => {
+    ++this.preparationGeneration;
+    this.clearPoll();
+    if (this.jobToken) this.cancelKeepalive(this.jobToken);
+  };
+
+  private readonly resumePreparation = (event: PageTransitionEvent): void => {
+    // A back/forward-cache restore is not a new background job: reconcile the
+    // cancellation sent on pagehide so the restored form does not stay busy.
+    if (event.persisted && this.jobToken)
+      void this.pollPreparation(this.preparationGeneration, this.jobToken);
+  };
 
   private changeMode(event: Event): void {
     const value = (event.currentTarget as HTMLSelectElement).value;
@@ -680,9 +943,12 @@ export class VideoApp extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    this.cancelOnExit();
     this.resetCopyFeedback();
     window.removeEventListener("scroll", this.updateBackToPlayer);
     window.removeEventListener("resize", this.updateBackToPlayer);
+    window.removeEventListener("pagehide", this.cancelOnExit);
+    window.removeEventListener("pageshow", this.resumePreparation);
     document.removeEventListener("visibilitychange", this.saveOnHide);
     document.removeEventListener("keydown", this.handlePlayerKey);
     this.hls?.destroy();
@@ -757,6 +1023,7 @@ export class VideoApp extends LitElement {
             : ""
         }
         <media-controller class="player-controller" nohotkeys novolumepref nomutedpref
+          ?noautohide=${this.notice.phase === "downloading"}
           defaultstreamtype="on-demand" ?gesturesdisabled=${!this.source}>
           <!-- biome-ignore lint/a11y/useMediaCaption: Captions are not extracted in this app. -->
           <video id="player" slot="media" playsinline preload="none" tabindex="0" aria-label="Video player"
@@ -766,6 +1033,7 @@ export class VideoApp extends LitElement {
             @pause=${() => this.saveProgress(true)}
             @ended=${() => this.saveProgress(true)}
             @error=${this.playbackError}></video>
+          ${this.renderPreparation()}
           <media-playback-rate-menu hidden anchor="auto" @toggle=${this.focusRateMenu}
             rates="0.25 0.5 0.75 1 1.25 1.5 1.75 2"
             ?disabled=${!this.source} aria-disabled=${this.source ? nothing : "true"}>
@@ -806,6 +1074,75 @@ export class VideoApp extends LitElement {
           }
         </div>
       </section>
+    `;
+  }
+
+  private renderPreparation() {
+    if (this.notice.phase !== "downloading") return nothing;
+    const snapshot = this.preparation;
+    const progress = snapshot?.state === "preparing" ? snapshot : null;
+    const phase = progress?.phase ?? "checking";
+    const canceling = this.cancelPending || snapshot?.state === "canceling";
+    const finalizing = phase === "finalizing";
+    const postprocessing = phase === "merging" || phase === "processing";
+    const transferring =
+      !canceling && phase !== "checking" && !postprocessing && !finalizing;
+    const bytes = progress?.downloadedBytes ?? null;
+    const total = progress?.totalBytes ?? null;
+    const estimate = progress?.totalEstimated ? "≈ " : "";
+    const percentage =
+      transferring &&
+      !this.progressConnectionLost &&
+      bytes !== null &&
+      total !== null
+        ? Math.min(100, (bytes / total) * 100)
+        : null;
+    const byteText = canceling
+      ? "Removing partial files"
+      : bytes === null
+        ? "Waiting for transfer data"
+        : !transferring
+          ? `Last transfer: ${fileSize(bytes)} downloaded`
+          : total === null
+            ? `${fileSize(bytes)} downloaded`
+            : `${fileSize(bytes)} of ${estimate}${fileSize(total)}`;
+    const support = canceling
+      ? "Waiting for the process to stop and cleanup to finish."
+      : finalizing
+        ? "Publishing the finished MP4. Cancellation is no longer available."
+        : phase === "merging"
+          ? "Preparing one playable MP4."
+          : phase === "video"
+            ? "Audio downloads next. Playback is ready after the MP4 is saved."
+            : phase === "audio"
+              ? "Video downloaded. Audio and video will be combined next."
+              : phase === "mp4" || phase === "processing"
+                ? "Playback is ready after the MP4 is saved."
+                : "Checking saved files and available MP4 tracks.";
+    return html`
+      <div class="download-overlay" slot="centered-chrome">
+        <section class="download-progress" aria-labelledby="download-heading">
+          <div class="download-top">
+            <div><strong id="download-heading">Preparing MP4</strong>
+              <span class="download-phase">${canceling ? "Canceling download…" : downloadPhases[phase]}</span></div>
+            <button class="plain <big>" type="button" @click=${this.cancelDownload}
+              ?hidden=${finalizing} ?disabled=${!this.jobToken}
+              aria-disabled=${canceling ? "true" : nothing}>${canceling ? "Canceling…" : "Cancel download"}</button>
+          </div>
+          <div class="download-metrics">
+            <span>${this.progressConnectionLost && !canceling ? "Last seen: " : ""}${byteText}</span>
+            ${transferring ? html`<span>${this.progressConnectionLost ? "Speed unavailable" : progress?.speedBytesPerSecond == null ? "Calculating speed…" : `${(progress.speedBytesPerSecond / (1024 * 1024)).toFixed(1)} MiB/s`}</span>` : nothing}
+            ${percentage === null ? nothing : html`<span>${estimate}${Math.round(percentage)}%</span>`}
+          </div>
+          <progress max="100" value=${percentage === null ? nothing : percentage}
+            ?hidden=${canceling || postprocessing || finalizing}
+            aria-label=${phase === "audio" ? "Current audio track download" : phase === "video" ? "Current video track download" : "MP4 preparation progress"}
+            aria-valuetext=${percentage === null ? "Total size unavailable" : `${estimate ? "Approximately " : ""}${Math.round(percentage)} percent of current transfer`}></progress>
+          <p class="download-support">${this.progressConnectionLost && !canceling ? "Reconnecting… The download may still be running." : support}</p>
+          ${this.cancelError ? html`<p class="download-support">${this.cancelError}</p>` : nothing}
+          ${canceling || finalizing ? nothing : html`<p class="download-support">Cancel stops this video's download in every tab. Closing this tab also cancels it.</p>`}
+        </section>
+      </div>
     `;
   }
 
