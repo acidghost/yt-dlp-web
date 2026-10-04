@@ -8,12 +8,12 @@ export function controlPlayer(
     const range = player.seekable;
     const start = range.length ? range.start(0) : 0;
     const end = range.length ? range.end(range.length - 1) : player.duration;
-    if (!Number.isFinite(end) || !Number.isFinite(player.currentTime))
+    if (!Number.isFinite(end) || !Number.isFinite(player.currentTime)) {
       return false;
-    player.currentTime = Math.max(
-      start,
-      Math.min(end, player.currentTime + seconds),
-    );
+    }
+
+    player.currentTime = Math.max(start, Math.min(end, player.currentTime + seconds));
+
     return true;
   };
 
@@ -22,8 +22,11 @@ export function controlPlayer(
     case "k":
     case "K":
       if (!event.repeat) {
-        if (player.paused) void player.play().catch(() => {});
-        else player.pause();
+        if (player.paused) {
+          void player.play().catch(() => {});
+        } else {
+          player.pause();
+        }
       }
       return true;
     case "ArrowLeft":
@@ -44,12 +47,18 @@ export function controlPlayer(
       return true;
     case "f":
     case "F":
-      if (!toggleFullscreen) return false;
-      if (!event.repeat) toggleFullscreen();
+      if (!toggleFullscreen) {
+        return false;
+      }
+      if (!event.repeat) {
+        toggleFullscreen();
+      }
       return true;
     case "m":
     case "M":
-      if (!event.repeat) player.muted = !player.muted;
+      if (!event.repeat) {
+        player.muted = !player.muted;
+      }
       return true;
     default:
       return false;

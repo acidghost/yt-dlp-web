@@ -3,8 +3,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { HistoryEntry, VideoId } from "./protocol";
 
-export const validVideoId = (id: string): boolean =>
-  /^[a-zA-Z0-9_-]{11}$/.test(id);
+export const validVideoId = (id: string): boolean => /^[a-zA-Z0-9_-]{11}$/.test(id);
 
 type Row = {
   id: string;
@@ -50,23 +49,20 @@ function schemaRows(db: Database): SchemaRow[] {
 // Run only while the server is stopped; media files are deliberately separate.
 export function resetLibrary(dataDir: string): void {
   const path = join(dataDir, "library.sqlite");
-  for (const suffix of ["", "-wal", "-shm", "-journal"])
+
+  for (const suffix of ["", "-wal", "-shm", "-journal"]) {
     rmSync(path + suffix, { force: true });
+  }
 }
 
 export class Library {
   private db: Database;
+
   // Assigned by prepareStatements(), called from the constructor.
   private listRows!: Statement<Row, []>;
   private find!: Statement<Metadata, [string]>;
-  private rememberRow!: Statement<
-    unknown,
-    [string, string, number | null, string | null]
-  >;
-  private watchRow!: Statement<
-    unknown,
-    [string, string, number | null, string | null, string]
-  >;
+  private rememberRow!: Statement<unknown, [string, string, number | null, string | null]>;
+  private watchRow!: Statement<unknown, [string, string, number | null, string | null, string]>;
   private deleteRow!: Statement<unknown, [string]>;
   private findPosition!: Statement<{ position_seconds: number }, [string]>;
   private savePosition!: Statement<unknown, [number, string]>;
@@ -78,8 +74,10 @@ export class Library {
     private now: () => number = Date.now,
   ) {
     mkdirSync(dataDir, { recursive: true });
+
     const path = join(dataDir, "library.sqlite");
     this.db = new Database(path, { create: true });
+
     try {
       this.checkSchema(path);
       this.prepareStatements();
@@ -90,7 +88,10 @@ export class Library {
   }
 
   close(): void {
-    if (this.closed) return;
+    if (this.closed) {
+      return;
+    }
+
     this.db.close();
     this.closed = true;
   }
@@ -103,12 +104,14 @@ export class Library {
     }
 
     const reference = new Database(":memory:");
+
     try {
       reference.run(createVideos);
-      if (JSON.stringify(actual) !== JSON.stringify(schemaRows(reference)))
+      if (JSON.stringify(actual) !== JSON.stringify(schemaRows(reference))) {
         throw new Error(
           `Unsupported library schema in ${path}. Stop the server and run yt-dlp-web --reset-db with the same DATA_DIR.`,
         );
+      }
     } finally {
       reference.close();
     }
@@ -119,29 +122,24 @@ export class Library {
       "SELECT id, title, duration, channel, last_watched_at, position_seconds FROM videos " +
         "WHERE last_watched_at IS NOT NULL ORDER BY last_watched_at DESC, id",
     );
+
     this.find = this.db.query<Metadata, [string]>(
       "SELECT title, duration, channel FROM videos WHERE id = ?1",
     );
-    this.rememberRow = this.db.query<
-      unknown,
-      [string, string, number | null, string | null]
-    >(
+    this.rememberRow = this.db.query<unknown, [string, string, number | null, string | null]>(
       `INSERT INTO videos (id, title, duration, channel) VALUES (?1, ?2, ?3, ?4)
        ON CONFLICT(id) DO UPDATE SET title=excluded.title, duration=excluded.duration,
          channel=COALESCE(excluded.channel, videos.channel)`,
     );
-    this.watchRow = this.db.query<
-      unknown,
-      [string, string, number | null, string | null, string]
-    >(
+    this.watchRow = this.db.query<unknown, [string, string, number | null, string | null, string]>(
       `INSERT INTO videos (id, title, duration, channel, last_watched_at) VALUES (?1, ?2, ?3, ?4, ?5)
        ON CONFLICT(id) DO UPDATE SET title=excluded.title, duration=excluded.duration,
          channel=COALESCE(excluded.channel, videos.channel),
          last_watched_at=excluded.last_watched_at`,
     );
-    this.deleteRow = this.db.query<unknown, [string]>(
-      "DELETE FROM videos WHERE id = ?1",
-    );
+
+    this.deleteRow = this.db.query<unknown, [string]>("DELETE FROM videos WHERE id = ?1");
+
     this.findPosition = this.db.query<{ position_seconds: number }, [string]>(
       "SELECT position_seconds FROM videos WHERE id = ?1",
     );
@@ -159,7 +157,10 @@ export class Library {
   }
 
   watch(id: VideoId, meta: Metadata): void {
-    if (!validVideoId(id)) throw new Error("Invalid video ID");
+    if (!validVideoId(id)) {
+      throw new Error("Invalid video ID");
+    }
+
     this.watchRow.run(
       id,
       meta.title,

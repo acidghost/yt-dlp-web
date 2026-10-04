@@ -12,16 +12,14 @@ const port = Number(process.env.TEST_PORT ?? 0);
 
 test("startup validates before allocating SQLite or cleaning staging", async () => {
   const dir = await mkdtemp(join(tmpdir(), "startup-"));
+
   try {
     const dataDir = join(dir, "data");
-    const stage = join(
-      dataDir,
-      "media",
-      "abcdefghijk",
-      `.staging-${crypto.randomUUID()}`,
-    );
+    const stage = join(dataDir, "media", "abcdefghijk", `.staging-${crypto.randomUUID()}`);
+
     await mkdir(stage, { recursive: true });
     await writeFile(join(stage, "video.mp4"), "in-progress");
+
     for (const options of [
       { port: -1 },
       { port: 65536 },
@@ -32,12 +30,8 @@ test("startup validates before allocating SQLite or cleaning staging", async () 
       { downloadLeaseMs: -1 },
     ]) {
       expect(() => startServer({ port, dataDir, ...options })).toThrow();
-      expect(await Bun.file(join(dataDir, "library.sqlite")).exists()).toBe(
-        false,
-      );
-      expect(await Bun.file(join(stage, "video.mp4")).text()).toBe(
-        "in-progress",
-      );
+      expect(await Bun.file(join(dataDir, "library.sqlite")).exists()).toBe(false);
+      expect(await Bun.file(join(stage, "video.mp4")).text()).toBe("in-progress");
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -51,6 +45,7 @@ test("bind failure closes the acquired library", async () => {
   });
   const close = spyOn(Library.prototype, "close");
   const clearTimer = spyOn(globalThis, "clearInterval");
+
   try {
     expect(() => startServer({ port, dataDir: dir })).toThrow("Bind failed");
     expect(clearTimer).toHaveBeenCalledTimes(1);
@@ -77,6 +72,7 @@ test("close rejects late proxy admission, drains a held request even after force
     extractHls: async () => {
       started.resolve();
       await finish.promise;
+
       return {
         title: "Late",
         channel: null,
@@ -93,6 +89,7 @@ test("close rejects late proxy admission, drains a held request even after force
     {},
     "proxy",
   ).catch(() => null);
+
   try {
     await Promise.race([
       started.promise,
@@ -100,14 +97,20 @@ test("close rejects late proxy admission, drains a held request even after force
         throw new Error("Request ended before extraction started");
       }),
     ]);
+
     const closing = app.close();
+
     expect(app.close()).toBe(closing);
+
     const forced = app.forceStopHttp();
+
     expect(dbClose).not.toHaveBeenCalled();
+
     finish.resolve();
     await closing;
     await forced;
     await response;
+
     expect(dbClose).toHaveBeenCalledTimes(1);
     expect(upstream).not.toHaveBeenCalled();
   } finally {
@@ -130,23 +133,25 @@ test("close survives the native file-check await without admitting a late downlo
   }));
   const base = fixture.start({ download });
   const realFile = Bun.file.bind(Bun);
-  const files = spyOn(Bun, "file").mockImplementation(((
-    ...args: Parameters<typeof Bun.file>
-  ) => {
+  const files = spyOn(Bun, "file").mockImplementation(((...args: Parameters<typeof Bun.file>) => {
     const file = realFile(...args);
     if (String(args[0]).endsWith("/abcdefghijk/video.mp4")) {
       const exists = file.exists.bind(file);
+
       Object.defineProperty(file, "exists", {
         value: async () => {
           started.release();
           await release.promise;
+
           return exists();
         },
       });
     }
+
     return file;
   }) as typeof Bun.file);
   const response = requestResolve(base);
+
   try {
     await Promise.race([
       started.promise,
@@ -154,10 +159,15 @@ test("close survives the native file-check await without admitting a late downlo
         throw new Error("Resolve ended before file check");
       }),
     ]);
+
     const closing = fixture.app.close();
+
     release.release();
+
     expect((await response).status).toBe(503);
+
     await closing;
+
     expect(download).not.toHaveBeenCalled();
   } finally {
     release.release();
@@ -182,6 +192,7 @@ test("close drains proxy preparation and refuses publication after its upstream 
     upstreamFetch: async () => {
       started.release();
       await finish.promise;
+
       return new Response(
         '#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aac",NAME="original",DEFAULT=NO,URI="audio.m3u8"\n#EXT-X-STREAM-INF:RESOLUTION=160x90,CODECS="avc1.64000c,mp4a.40.2",AUDIO="aac"\nvideo.m3u8',
       );
@@ -189,6 +200,7 @@ test("close drains proxy preparation and refuses publication after its upstream 
   });
   const closeDb = spyOn(Library.prototype, "close");
   const response = requestResolve(base, undefined, {}, "proxy");
+
   try {
     await Promise.race([
       started.promise,
@@ -196,15 +208,22 @@ test("close drains proxy preparation and refuses publication after its upstream 
         throw new Error("Resolve ended before upstream preparation");
       }),
     ]);
+
     const closing = fixture.app.close();
+
     expect(closeDb).not.toHaveBeenCalled();
+
     finish.release();
+
     const result = await response;
+
     expect(result.status).toBe(503);
     expect(await result.json()).toEqual({
       error: "Server is stopping. Retry later.",
     });
+
     await closing;
+
     expect(closeDb).toHaveBeenCalledTimes(1);
   } finally {
     finish.release();
@@ -223,10 +242,9 @@ test("startup resource setup failure closes SQLite without leaving a bound HTTP 
     throw new Error("Timer allocation failed");
   });
   const close = spyOn(Library.prototype, "close");
+
   try {
-    expect(() => startServer({ port, dataDir: dir })).toThrow(
-      "Timer allocation failed",
-    );
+    expect(() => startServer({ port, dataDir: dir })).toThrow("Timer allocation failed");
     expect(close).toHaveBeenCalledTimes(1);
     expect(serve).not.toHaveBeenCalled();
   } finally {

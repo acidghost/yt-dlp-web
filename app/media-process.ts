@@ -13,7 +13,9 @@ async function readLimited(
   const cancel = () => {
     void reader.cancel().catch(() => {});
   };
+
   signal?.addEventListener("abort", cancel, { once: true });
+
   const decoder = new TextDecoder();
   let total = 0;
   let result = "";
@@ -21,10 +23,15 @@ async function readLimited(
   try {
     while (true) {
       const { value, done } = await reader.read();
-      if (done) return result + decoder.decode();
+      if (done) {
+        return result + decoder.decode();
+      }
+
       total += value.byteLength;
-      if (total > max)
+      if (total > max) {
         throw new InputError("yt-dlp output exceeded the limit for this demo.");
+      }
+
       result += decoder.decode(value, { stream: true });
     }
   } finally {
@@ -40,13 +47,13 @@ export async function runExtraction(
   limits: { stdoutMax: number; timeoutMs: number; timeoutMessage: string },
 ): Promise<string> {
   let proc: ReturnType<typeof Bun.spawn>;
+
   try {
     proc = Bun.spawn(["yt-dlp", ...args], { stdout: "pipe", stderr: "pipe" });
   } catch (error) {
-    throw new InputError(
-      "Could not start yt-dlp. Check that its binary is on PATH.",
-      { cause: error },
-    );
+    throw new InputError("Could not start yt-dlp. Check that its binary is on PATH.", {
+      cause: error,
+    });
   }
 
   let timedOut = false;
@@ -61,16 +68,24 @@ export async function runExtraction(
       readLimited(proc.stderr as ReadableStream<Uint8Array>, 16_000),
       proc.exited,
     ]);
-    if (timedOut) throw new InputError(limits.timeoutMessage);
-    if (exitCode !== 0) throw extractionFailure(stderr);
+    if (timedOut) {
+      throw new InputError(limits.timeoutMessage);
+    }
+    if (exitCode !== 0) {
+      throw extractionFailure(stderr);
+    }
+
     return stdout;
   } finally {
     clearTimeout(timer);
-    if (proc.exitCode === null) proc.kill();
+    if (proc.exitCode === null) {
+      proc.kill();
+    }
   }
 }
 
 const progressPrefix = "YTDLP_WEB_PROGRESS:";
+
 const emptyProgress = {
   downloadedBytes: null,
   totalBytes: null,
@@ -79,42 +94,38 @@ const emptyProgress = {
 };
 
 function progressRecord(line: string): TransferProgress | null {
-  if (!line.startsWith(progressPrefix)) return null;
+  if (!line.startsWith(progressPrefix)) {
+    return null;
+  }
+
   try {
     const record = JSON.parse(line.slice(progressPrefix.length));
-    if (record.phase === "postprocess")
+    if (record.phase === "postprocess") {
       return {
-        phase:
-          record.progress?.postprocessor === "Merger"
-            ? "merging"
-            : "processing",
+        phase: record.progress?.postprocessor === "Merger" ? "merging" : "processing",
         ...emptyProgress,
       };
-    if (record.phase !== "download" || !record.progress || !record.info)
+    }
+    if (record.phase !== "download" || !record.progress || !record.info) {
       return null;
+    }
+
     const info = record.info;
     const data = record.progress;
     const number = (value: unknown): number | null =>
-      typeof value === "number" && Number.isFinite(value) && value >= 0
-        ? value
-        : null;
+      typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
     const exact = number(data.total_bytes);
     const estimate = number(data.total_bytes_estimate);
     const total = exact && exact > 0 ? exact : estimate;
     const hasVideo = typeof info.vcodec === "string" && info.vcodec !== "none";
     const hasAudio = typeof info.acodec === "string" && info.acodec !== "none";
+
     return {
-      phase:
-        hasVideo && !hasAudio
-          ? "video"
-          : hasAudio && !hasVideo
-            ? "audio"
-            : "mp4",
+      phase: hasVideo && !hasAudio ? "video" : hasAudio && !hasVideo ? "audio" : "mp4",
       downloadedBytes: number(data.downloaded_bytes),
       totalBytes: total && total > 0 ? total : null,
       totalEstimated: !(exact && exact > 0) && !!total,
-      speedBytesPerSecond:
-        data.status === "finished" ? null : number(data.speed),
+      speedBytesPerSecond: data.status === "finished" ? null : number(data.speed),
     };
   } catch {
     return null; // Optional progress must never suppress valid final metadata.
@@ -134,7 +145,9 @@ async function readDownloadOutput(
   const cancel = () => {
     void reader.cancel().catch(() => {});
   };
+
   signal?.addEventListener("abort", cancel, { once: true });
+
   const decoder = new TextDecoder();
   let pending = "";
   let dropping = false;
@@ -146,14 +159,17 @@ async function readDownloadOutput(
       const line = pending.trim();
       if (line.startsWith(progressPrefix)) {
         const progress = progressRecord(line);
-        if (progress) onProgress?.(progress);
+        if (progress) {
+          onProgress?.(progress);
+        }
       } else if (collectMetadata) {
         const text = pending + (newline ? "\n" : "");
+
         metadataBytes += Buffer.byteLength(text);
-        if (metadataBytes > 32_000)
-          throw new InputError(
-            "yt-dlp output exceeded the limit for this demo.",
-          );
+        if (metadataBytes > 32_000) {
+          throw new InputError("yt-dlp output exceeded the limit for this demo.");
+        }
+
         metadata += text;
       }
     }
@@ -162,33 +178,43 @@ async function readDownloadOutput(
   };
   const consume = (text: string) => {
     tail = (tail + text).slice(-16_000);
+
     const lines = text.split("\n");
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i] ?? "";
       if (!dropping) {
         const next = pending + line;
-        const optional =
-          !collectMetadata || next.trimStart().startsWith(progressPrefix);
+        const optional = !collectMetadata || next.trimStart().startsWith(progressPrefix);
         if (next.length > (optional ? 16_000 : 32_000)) {
-          if (!optional)
-            throw new InputError(
-              "yt-dlp output exceeded the limit for this demo.",
-            );
+          if (!optional) {
+            throw new InputError("yt-dlp output exceeded the limit for this demo.");
+          }
+
           pending = "";
           dropping = true;
-        } else pending = next;
+        } else {
+          pending = next;
+        }
       }
-      if (i < lines.length - 1) finishLine(true);
+      if (i < lines.length - 1) {
+        finishLine(true);
+      }
     }
   };
+
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) {
         consume(decoder.decode());
-        if (pending || dropping) finishLine(false);
+        if (pending || dropping) {
+          finishLine(false);
+        }
+
         return collectMetadata ? metadata : tail;
       }
+
       consume(decoder.decode(value, { stream: true }));
     }
   } finally {
@@ -199,21 +225,23 @@ async function readDownloadOutput(
 
 // Separate from HLS extraction: own a process group so cancel and timeout also
 // stop ffmpeg, and await termination before the server removes staging.
-export async function runDownload(
-  args: string[],
-  options?: DownloadOptions,
-): Promise<string> {
+export async function runDownload(args: string[], options?: DownloadOptions): Promise<string> {
   options?.signal.throwIfAborted();
+
   let proc: ReturnType<typeof startOwnedProcess>;
+
   try {
     proc = startOwnedProcess(["yt-dlp", ...args]);
   } catch (error) {
-    if (error instanceof InputError) throw error;
-    throw new InputError(
-      "Could not start yt-dlp. Check that its binary is on PATH.",
-      { cause: error },
-    );
+    if (error instanceof InputError) {
+      throw error;
+    }
+
+    throw new InputError("Could not start yt-dlp. Check that its binary is on PATH.", {
+      cause: error,
+    });
   }
+
   const reads = new AbortController();
   let rejectStop!: (error: unknown) => void;
   const stopFailed = new Promise<never>((_resolve, reject) => {
@@ -226,8 +254,12 @@ export async function runDownload(
       void stopping.catch(rejectStop);
     }
   };
+
   options?.signal.addEventListener("abort", stop, { once: true });
-  if (options?.signal.aborted) stop();
+  if (options?.signal.aborted) {
+    stop();
+  }
+
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
@@ -237,12 +269,15 @@ export async function runDownload(
   // sample regress the UI after postprocessing has already started.
   let postprocessing = false;
   const onProgress = (progress: TransferProgress) => {
-    const processing =
-      progress.phase === "merging" || progress.phase === "processing";
-    if (postprocessing && !processing) return;
+    const processing = progress.phase === "merging" || progress.phase === "processing";
+    if (postprocessing && !processing) {
+      return;
+    }
+
     postprocessing ||= processing;
     options?.onProgress(progress);
   };
+
   try {
     const [stdout, stderr, exitCode] = await Promise.race([
       Promise.all([
@@ -252,24 +287,26 @@ export async function runDownload(
           reads.signal,
           true,
         ),
-        readDownloadOutput(
-          proc.stderr as ReadableStream<Uint8Array>,
-          onProgress,
-          reads.signal,
-        ),
+        readDownloadOutput(proc.stderr as ReadableStream<Uint8Array>, onProgress, reads.signal),
         proc.exited,
       ]),
       stopFailed,
     ]);
+
     options?.signal.throwIfAborted();
-    if (timedOut)
+    if (timedOut) {
       throw new InputError("The download timed out after 20 minutes.");
-    if (exitCode !== 0) throw extractionFailure(stderr);
+    }
+    if (exitCode !== 0) {
+      throw extractionFailure(stderr);
+    }
+
     return stdout;
   } finally {
     clearTimeout(timer);
     options?.signal.removeEventListener("abort", stop);
     stop();
+
     try {
       await stopping;
     } finally {

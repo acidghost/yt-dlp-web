@@ -24,54 +24,69 @@ export async function appFixture() {
       time += ms;
     },
     get app() {
-      if (!app) throw new Error("Fixture not started");
+      if (!app) {
+        throw new Error("Fixture not started");
+      }
+
       return app;
     },
     // Only the unsafe-termination regression uses a fake with no actual writer.
     confirmedNoExternalWriters: false,
     gate() {
       const gate = deferred();
+
       releases.push(gate.resolve);
+
       return { promise: gate.promise, release: gate.resolve };
     },
     start(config: Options = {}) {
-      if (app)
+      if (app) {
         throw new Error("Use restart() to close the previous instance first");
+      }
+
       options = config;
+
       const { proxy, ...serverOptions } = config;
+
       app = startServer({
         port: Number(process.env.TEST_PORT ?? 0),
         dataDir,
         now: fixture.now,
         download: async (_url, path) => {
           await writeFile(path, "abcdefghij");
+
           return { title: "Fixture", channel: "Fixture channel", duration: 10 };
         },
         ...(proxy ? proxyOptions : {}),
         ...serverOptions,
       });
+
       return `http://127.0.0.1:${app.server.port}`;
     },
     async restart(config = options) {
       await app?.close();
       app = undefined;
+
       return fixture.start(config);
     },
     async [Symbol.asyncDispose]() {
-      for (const release of releases) release();
+      for (const release of releases) {
+        release();
+      }
+
       try {
         await app?.close();
       } catch (error) {
-        if (
-          !fixture.confirmedNoExternalWriters ||
-          !(error instanceof DownloadTerminationError)
-        )
+        if (!fixture.confirmedNoExternalWriters || !(error instanceof DownloadTerminationError)) {
           throw error;
+        }
       }
+
       // Do not remove data if close/termination was not confirmed above.
       await rm(dir, { recursive: true, force: true });
     },
   };
+
   return fixture;
 }
 
@@ -86,7 +101,7 @@ const proxyOptions = {
   }),
   upstreamFetch: async (url: string, options: RequestInit) => {
     const path = new URL(url).pathname;
-    if (path === "/master.m3u8")
+    if (path === "/master.m3u8") {
       return new Response(
         [
           "#EXTM3U",
@@ -97,15 +112,18 @@ const proxyOptions = {
           "https://rr1.googlevideo.com/large.m3u8",
         ].join("\n"),
       );
-    if (path === "/video.m3u8")
+    }
+    if (path === "/video.m3u8") {
       return new Response(
         '#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:6,\nseg.ts?range=0-10\n#EXT-X-ENDLIST',
       );
-    if (path === "/audio.m3u8")
+    }
+    if (path === "/audio.m3u8") {
       return new Response(
         "#EXTM3U\n#EXTINF:6,\nhttps://rr1.googlevideo.com/audio.ts\n#EXT-X-ENDLIST",
       );
-    if (path === "/seg.ts")
+    }
+    if (path === "/seg.ts") {
       return new Response("segment", {
         status: new Headers(options.headers).has("Range") ? 206 : 200,
         headers: {
@@ -113,8 +131,14 @@ const proxyOptions = {
           "Content-Type": "video/mp2t",
         },
       });
-    if (path === "/init.mp4") return new Response("init");
-    if (path === "/audio.ts") return new Response("audio");
+    }
+    if (path === "/init.mp4") {
+      return new Response("init");
+    }
+    if (path === "/audio.ts") {
+      return new Response("audio");
+    }
+
     throw new Error(`Unexpected upstream path: ${path}`);
   },
 };

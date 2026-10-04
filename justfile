@@ -65,4 +65,4 @@ run-image origin:
         --mount type=volume,source=yt-dlp-web-data,target=/data {{image}}
 
 clean:
-  rm -rf ./dist/
+    rm -rf ./dist/

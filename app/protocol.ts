@@ -10,13 +10,16 @@ export type ResolveRequest = z.infer<typeof ResolveRequestSchema>;
 
 export const WatchRequestSchema = z.object({ token: z.string() });
 export type WatchRequest = z.infer<typeof WatchRequestSchema>;
+
 export const ProgressRequestSchema = z.object({
   token: z.string(),
   positionSeconds: z.number().finite().min(0).max(604800),
 });
 export type ProgressRequest = z.infer<typeof ProgressRequestSchema>;
+
 export const ApiErrorSchema = z.object({ error: z.string() });
 export type ApiError = z.infer<typeof ApiErrorSchema>;
+
 export const OkResponseSchema = z.object({ ok: z.literal(true) });
 export type OkResponse = z.infer<typeof OkResponseSchema>;
 
@@ -40,29 +43,21 @@ export const ResolvedVideoSchema = z.discriminatedUnion("kind", [
 export type ResolvedVideo = z.infer<typeof ResolvedVideoSchema>;
 
 export const TransferProgressSchema = z.object({
-  phase: z.enum([
-    "checking",
-    "video",
-    "audio",
-    "mp4",
-    "merging",
-    "processing",
-    "finalizing",
-  ]),
+  phase: z.enum(["checking", "video", "audio", "mp4", "merging", "processing", "finalizing"]),
   downloadedBytes: z.number().finite().nonnegative().nullable(),
   totalBytes: z.number().finite().positive().nullable(),
   totalEstimated: z.boolean(),
   speedBytesPerSecond: z.number().finite().nonnegative().nullable(),
 });
 export type TransferProgress = z.infer<typeof TransferProgressSchema>;
+
 export const PreparingVideoSchema = z.object({
   kind: z.literal("preparing"),
   jobToken: z.uuid(),
 });
-export const ResolveResponseSchema = z.union([
-  ResolvedVideoSchema,
-  PreparingVideoSchema,
-]);
+
+export const ResolveResponseSchema = z.union([ResolvedVideoSchema, PreparingVideoSchema]);
+
 export const PreparationSnapshotSchema = z.discriminatedUnion("state", [
   TransferProgressSchema.extend({ state: z.literal("preparing") }),
   z.object({ state: z.literal("canceling") }),
@@ -82,6 +77,7 @@ export const HistoryEntrySchema = z.object({
   positionSeconds: z.number(),
   mp4: z.object({ sizeBytes: z.number().nullable() }),
 });
+
 export const HistoryListSchema = z.array(HistoryEntrySchema);
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 

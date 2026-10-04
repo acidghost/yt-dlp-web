@@ -1,9 +1,6 @@
 type WatchProgress = { duration: number | null; positionSeconds: number };
 
-export function fullyWatched({
-  duration,
-  positionSeconds,
-}: WatchProgress): boolean {
+export function fullyWatched({ duration, positionSeconds }: WatchProgress): boolean {
   return (
     duration !== null &&
     Number.isFinite(duration) &&

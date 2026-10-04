@@ -14,12 +14,15 @@ test("rejects disallowed manifest hosts and does not follow redirects to other h
   const called: string[] = [];
   const upstream = async (url: string, options: RequestInit) => {
     expect(options.redirect).toBe("manual");
+
     called.push(url);
+
     return new Response(null, {
       status: 302,
       headers: { Location: "http://127.0.0.1/admin" },
     });
   };
+
   expect(
     () =>
       new ProxySession(
@@ -30,7 +33,9 @@ test("rejects disallowed manifest hosts and does not follow redirects to other h
         upstream,
       ),
   ).toThrow(InputError);
+
   const proxy = new ProxySession(source, upstream);
+
   await expect(proxy.prepare("token")).rejects.toThrow(InputError);
   expect(called).toEqual([source.manifest]);
 });
@@ -48,6 +53,7 @@ test("rejects playlists that try to make the server fetch unrelated hosts", asyn
         ].join("\n"),
       ),
   );
+
   await expect(proxy.prepare("token")).rejects.toThrow("disallowed host");
 });
 
@@ -67,8 +73,11 @@ test("marks the original audio rendition default and excludes incompatible varia
         ].join("\n"),
       ),
   );
+
   await proxy.prepare("token");
+
   const master = await (await proxy.serve("token", "0")).text();
+
   expect(master).toMatch(/NAME="English - original"[^\n]*DEFAULT=YES/);
   expect(master).toMatch(/NAME="Dubbed"[^\n]*DEFAULT=NO/);
   expect(master).not.toContain("1920x1080");
@@ -78,11 +87,9 @@ test("marks the original audio rendition default and excludes incompatible varia
 test("rejects video-only playlists before publishing a proxy session", async () => {
   const proxy = new ProxySession(
     source,
-    async () =>
-      new Response(
-        "#EXTM3U\n#EXTINF:6,\nhttps://rr1.googlevideo.com/segment.ts\n",
-      ),
+    async () => new Response("#EXTM3U\n#EXTINF:6,\nhttps://rr1.googlevideo.com/segment.ts\n"),
   );
+
   await expect(proxy.prepare("token")).rejects.toThrow("with audio");
 });
 
@@ -90,24 +97,29 @@ test("allowed relative redirects rebase playlist resources without automatic fet
   const called: string[] = [];
   const proxy = new ProxySession(source, async (url, options) => {
     expect(options.redirect).toBe("manual");
+
     called.push(url);
-    if (url === source.manifest)
+    if (url === source.manifest) {
       return new Response(null, {
         status: 302,
         headers: { Location: "/edge/master.m3u8" },
       });
-    if (url.endsWith("/edge/master.m3u8"))
+    }
+    if (url.endsWith("/edge/master.m3u8")) {
       return new Response(
         '#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aac",NAME="original",DEFAULT=NO,URI="audio.m3u8"\n#EXT-X-STREAM-INF:RESOLUTION=640x360,CODECS="avc1.4d401e,mp4a.40.2",AUDIO="aac"\nvideo.m3u8',
       );
+    }
+
     return new Response("#EXTM3U\n#EXTINF:5,\nsegment.ts\n");
   });
+
   await proxy.prepare("token");
+
   const master = await (await proxy.serve("token", "0")).text();
+
   expect(master).toContain('URI="/api/proxy/token/1"');
-  expect(await (await proxy.serve("token", "1")).text()).toContain(
-    "/api/proxy/token/3",
-  );
+  expect(await (await proxy.serve("token", "1")).text()).toContain("/api/proxy/token/3");
   expect(called).toEqual([
     source.manifest,
     "https://manifest.googlevideo.com/edge/master.m3u8",
@@ -119,15 +131,16 @@ test("redirect chains stop after the permitted three hops", async () => {
   const called: string[] = [];
   const proxy = new ProxySession(source, async (url, options) => {
     expect(options.redirect).toBe("manual");
+
     called.push(url);
+
     return new Response(null, {
       status: 302,
       headers: { Location: `/hop-${called.length}.m3u8` },
     });
   });
-  await expect(proxy.prepare("token")).rejects.toThrow(
-    "Too many YouTube media redirects.",
-  );
+
+  await expect(proxy.prepare("token")).rejects.toThrow("Too many YouTube media redirects.");
   expect(called).toEqual([
     source.manifest,
     "https://manifest.googlevideo.com/hop-1.m3u8",

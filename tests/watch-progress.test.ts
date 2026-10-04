@@ -12,10 +12,13 @@ test("zero progress never marks a video watched, including short videos", () => 
   for (const duration of [10, 30, 120]) {
     expect(fullyWatched({ duration, positionSeconds: 0 })).toBe(false);
   }
+
   expect(fullyWatched({ duration: 10, positionSeconds: 1 })).toBe(true);
+
   for (const duration of [null, 0, -1, Number.NaN, Infinity]) {
     expect(fullyWatched({ duration, positionSeconds: 100 })).toBe(false);
   }
+
   for (const positionSeconds of [-1, Number.NaN, Infinity]) {
     expect(fullyWatched({ duration: 120, positionSeconds })).toBe(false);
   }

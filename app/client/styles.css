@@ -227,9 +227,7 @@ main {
   align-items: center;
 }
 
-.player-controller
-  media-control-bar
-  > :not(media-time-range):not(.player-control-spacer) {
+.player-controller media-control-bar > :not(media-time-range):not(.player-control-spacer) {
   flex: 0 0 auto;
 }
 
@@ -288,8 +286,7 @@ main {
     media-volume-range:focus-within
   )
   > media-control-bar,
-.player-controller:has(> media-playback-rate-menu:not([hidden]))
-  > media-control-bar,
+.player-controller:has(> media-playback-rate-menu:not([hidden])) > media-control-bar,
 .player-controller > media-playback-rate-menu:not([hidden]) {
   opacity: 1;
 }

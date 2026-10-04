@@ -22,6 +22,7 @@ export function controlledProcess() {
     try {
       out.close();
     } catch {}
+
     try {
       err.close();
     } catch {}
@@ -31,6 +32,7 @@ export function controlledProcess() {
     end();
     done.resolve(code);
   };
+
   return {
     stdout,
     stderr,
@@ -39,9 +41,7 @@ export function controlledProcess() {
       return exitCode;
     },
     emitStdout: (text: string | Uint8Array) =>
-      out.enqueue(
-        typeof text === "string" ? new TextEncoder().encode(text) : text,
-      ),
+      out.enqueue(typeof text === "string" ? new TextEncoder().encode(text) : text),
     emitStderr: (text: string) => err.enqueue(new TextEncoder().encode(text)),
     failStdout: (error: Error) => out.error(error),
     exit,

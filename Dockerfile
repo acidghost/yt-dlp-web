@@ -12,8 +12,8 @@ RUN bun scripts/build.ts
 FROM ghcr.io/acidghost/yt-dlp-oci:2026.8.19-0@sha256:62949015c7aae0359c6278ae031b68e1db03a8f853c4983b12960f6702ed468b
 USER root
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg \
- && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /src/dist/yt-dlp-web /usr/local/bin/yt-dlp-web
 ENV HOST=0.0.0.0 PORT=3000 DATA_DIR=/data DENO_DIR=/data/.deno
 # PUBLIC_ORIGIN must be set to the ingress HTTPS origin at runtime.

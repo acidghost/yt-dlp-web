@@ -5,6 +5,7 @@ export function deferred<T = void>() {
     resolve = yes;
     reject = no;
   });
+
   return { promise, resolve, reject };
 }
 
@@ -16,12 +17,15 @@ export async function waitFor<T>(
 ): Promise<T> {
   const deadline = performance.now() + 2500;
   let last: T | undefined;
+
   do {
     last = await read();
-    if (ready(last)) return last;
+    if (ready(last)) {
+      return last;
+    }
+
     await Bun.sleep(5);
   } while (performance.now() < deadline);
-  throw new Error(
-    `Timed out waiting for ${description}; last result: ${JSON.stringify(last)}`,
-  );
+
+  throw new Error(`Timed out waiting for ${description}; last result: ${JSON.stringify(last)}`);
 }

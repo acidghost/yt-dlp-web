@@ -13,6 +13,7 @@ if (import.meta.main) {
       log: console.log,
       complete: (outcome) => process.exit(outcome === "failed" ? 1 : 0),
     });
+
     registerSignals(process, shutdown);
   }
 }

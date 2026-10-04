@@ -10,10 +10,12 @@ export type DownloadedVideo = {
   duration: number | null;
   channel: string | null;
 };
+
 export type DownloadOptions = {
   signal: AbortSignal;
   onProgress: (progress: TransferProgress) => void;
 };
+
 export type Download = (
   url: string,
   outputPath: string,
@@ -21,12 +23,8 @@ export type Download = (
 ) => Promise<DownloadedVideo>;
 
 const videoId = /^[a-zA-Z0-9_-]{11}$/;
-const youtubeHosts = new Set([
-  "youtube.com",
-  "www.youtube.com",
-  "m.youtube.com",
-  "youtu.be",
-]);
+
+const youtubeHosts = new Set(["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"]);
 
 // Prefer a browser-playable H.264 video + AAC audio, remuxed without re-encoding.
 // A combined MP4 is the fallback when separate tracks are not available.
@@ -45,10 +43,12 @@ const commonArgs = [
 ];
 
 export function canonicalVideoUrl(value: unknown): string {
-  if (typeof value !== "string" || value.length > 2048)
+  if (typeof value !== "string" || value.length > 2048) {
     throw new InputError("Enter a YouTube video URL.");
+  }
 
   let url: URL;
+
   try {
     url = new URL(value);
   } catch {
@@ -73,10 +73,9 @@ export function canonicalVideoUrl(value: unknown): string {
         : /^\/(shorts|live)\//.test(url.pathname)
           ? url.pathname.split("/")[2]
           : null;
-  if (!id || !videoId.test(id))
-    throw new InputError(
-      "Enter a single YouTube watch, short, or live video URL.",
-    );
+  if (!id || !videoId.test(id)) {
+    throw new InputError("Enter a single YouTube watch, short, or live video URL.");
+  }
 
   return `https://www.youtube.com/watch?v=${id}`;
 }
@@ -101,13 +100,13 @@ function videoMeta(info: {
 }
 
 // Prefers the channel name, falling back to the uploader.
-function channelName(info: {
-  channel?: unknown;
-  uploader?: unknown;
-}): string | null {
+function channelName(info: { channel?: unknown; uploader?: unknown }): string | null {
   for (const value of [info.channel, info.uploader]) {
-    if (typeof value === "string" && value.trim()) return value;
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
   }
+
   return null;
 }
 
@@ -138,8 +137,9 @@ export const downloadVideo: Download = async (url, outputPath, options) => {
     options,
   );
 
-  if (!stdout.trim())
+  if (!stdout.trim()) {
     throw new InputError("Live or unavailable videos are not supported.");
+  }
 
   const result = parseJson<{
     filepath?: unknown;
@@ -151,11 +151,9 @@ export const downloadVideo: Download = async (url, outputPath, options) => {
 
   // yt-dlp reports after_move.filepath as an absolute path even when --output
   // was relative (e.g. DATA_DIR=./data). Keep rejecting a different file.
-  if (
-    typeof result.filepath !== "string" ||
-    resolve(result.filepath) !== resolve(outputPath)
-  )
+  if (typeof result.filepath !== "string" || resolve(result.filepath) !== resolve(outputPath)) {
     throw new InputError("yt-dlp did not create the expected MP4 file.");
+  }
 
   return { ...videoMeta(result), channel: channelName(result) };
 };
@@ -167,18 +165,13 @@ export type HlsSource = {
   manifest: string;
   headers: Record<string, string>;
 };
+
 export type ExtractHls = (url: string) => Promise<HlsSource>;
 
 // Print only selected fields: a full yt-dlp JSON dump includes megabytes of captions.
 export const extractHls: ExtractHls = async (url) => {
   const stdout = await runExtraction(
-    [
-      ...commonArgs,
-      "--print",
-      "%(.{title,duration,channel,uploader,formats})#j",
-      "--",
-      url,
-    ],
+    [...commonArgs, "--print", "%(.{title,duration,channel,uploader,formats})#j", "--", url],
     {
       stdoutMax: 2_000_000,
       timeoutMs: 60_000,
@@ -211,16 +204,20 @@ export const extractHls: ExtractHls = async (url) => {
         typeof f.manifest_url === "string",
     )
     .sort((a, b) => (b.height ?? 0) - (a.height ?? 0))[0];
-  if (!chosen?.manifest_url)
+  if (!chosen?.manifest_url) {
     throw new InputError(
       "No H.264 HLS playlist is available for this video at or below 720p. Select a download mode instead.",
     );
+  }
 
   // Only forward the headers YouTube's CDN actually needs.
   const headers: Record<string, string> = {};
+
   for (const name of ["User-Agent", "Accept", "Accept-Language", "Referer"]) {
     const value = chosen.http_headers?.[name];
-    if (typeof value === "string") headers[name] = value;
+    if (typeof value === "string") {
+      headers[name] = value;
+    }
   }
 
   return {

@@ -8,6 +8,7 @@ test("CLI reset dispatch never starts a server or validates an unused port", () 
   });
   const reset = mock();
   const log = mock();
+
   expect(
     runCli({
       argv: ["--reset-db"],
@@ -35,6 +36,7 @@ for (const [argv, env] of [
       throw new Error("Must not start");
     });
     const reset = mock();
+
     expect(() => runCli({ argv, env, start, reset, log: mock() })).toThrow();
     expect(start).not.toHaveBeenCalled();
     expect(reset).not.toHaveBeenCalled();
@@ -55,13 +57,14 @@ test("CLI composes a real application from explicit environment values", async (
         hostname: "127.0.0.1",
         publicOrigin: null,
       });
+
       fixture.start({ ...options, port: Number(process.env.TEST_PORT ?? 0) });
+
       return fixture.app;
     },
   });
+
   expect(app).toBe(fixture.app);
-  expect((await fetch(`http://127.0.0.1:${app?.server.port}/healthz`)).ok).toBe(
-    true,
-  );
+  expect((await fetch(`http://127.0.0.1:${app?.server.port}/healthz`)).ok).toBe(true);
   expect(log).toHaveBeenCalledTimes(1);
 });

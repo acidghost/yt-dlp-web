@@ -26,13 +26,8 @@ import {
 import { controlPlayer } from "./player-keys";
 import { fullyWatched, resumePosition } from "./watch-progress";
 
-type Phase =
-  | "idle"
-  | "extracting"
-  | "downloading"
-  | "ready"
-  | "error"
-  | "canceled";
+type Phase = "idle" | "extracting" | "downloading" | "ready" | "error" | "canceled";
+
 const downloadPhases = {
   checking: "Checking video…",
   video: "Downloading video",
@@ -42,24 +37,37 @@ const downloadPhases = {
   processing: "Processing MP4…",
   finalizing: "Saving MP4…",
 };
+
 type Notice = { phase: Phase; text: string };
+
 const HISTORY_CHUNK_SIZE = 12;
 
 function fileSize(bytes: number | null): string {
-  if (bytes === null) return "Size unavailable";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  if (bytes < 1024 * 1024 * 1024)
+  if (bytes === null) {
+    return "Size unavailable";
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KiB`;
+  }
+  if (bytes < 1024 * 1024 * 1024) {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  }
+
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
 }
 
 function durationLabel(seconds: number | null): string {
-  if (seconds === null || !Number.isFinite(seconds) || seconds < 0)
+  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) {
     return "Duration unavailable";
+  }
+
   const total = Math.floor(seconds);
   const minutes = Math.floor(total / 60);
   const remainder = String(total % 60).padStart(2, "0");
+
   return `${minutes}:${remainder}`;
 }
 
@@ -72,11 +80,13 @@ export class VideoApp extends LitElement {
 
   @state() private mode: PlayerMode = "proxy";
   @state() private url = "";
+
   @state() private notice: Notice = {
     phase: "idle",
     text: "Paste a public YouTube video URL to get started.",
   };
   @state() private source: ResolvedVideo | null = null;
+
   @state() private preparation: PreparationSnapshot | null = null;
   @state() private progressConnectionLost = false;
   @state() private cancelPending = false;
@@ -87,28 +97,32 @@ export class VideoApp extends LitElement {
   private pollTimer: number | undefined;
   private pollController: AbortController | null = null;
   private pollFailures = 0;
+
   @state() private history: HistoryEntry[] = [];
   @state() private historyError = "";
+
   @state() private widePlayer = false;
   @state() private showBackToPlayer = false;
   @state() private visibleHistoryCount = HISTORY_CHUNK_SIZE;
   @state() private deleting = false;
   @state() private updatingProgress = false;
+
   @state() private copyStatus = "";
   @state() private copyFallback = "";
   private copyStatusTimer: number | undefined;
+
   private startSeconds: number | undefined;
   private historyRequest = 0;
   private watchedThisPlay = false;
   private watchRecorded = false;
   private hls: Hls | null = null;
   private pendingResumeSeconds: number | null = null;
+
   private lastProgressAt = 0;
   private lastProgressSeconds = -1;
   private progressInFlight = false;
   private progressSaved: Promise<void> = Promise.resolve();
-  private pendingProgress: { source: ResolvedVideo; seconds: number } | null =
-    null;
+  private pendingProgress: { source: ResolvedVideo; seconds: number } | null = null;
 
   private get busy(): boolean {
     return (
@@ -147,18 +161,23 @@ export class VideoApp extends LitElement {
     document.addEventListener("visibilitychange", this.saveOnHide);
     document.addEventListener("keydown", this.handlePlayerKey);
     void this.loadHistory();
-    if (this.jobToken)
+    if (this.jobToken) {
       void this.pollPreparation(this.preparationGeneration, this.jobToken);
+    }
   }
 
   override firstUpdated(): void {
     const handoff = parseHandoff(window.location.search);
-    if (!handoff) return;
+    if (!handoff) {
+      return;
+    }
     if ("error" in handoff) {
       this.url = new URLSearchParams(window.location.search).get("url") ?? "";
       this.fail(handoff.error);
+
       return;
     }
+
     this.url = handoff.url;
     this.mode = handoff.mode;
     this.startSeconds = handoff.startSeconds;
@@ -168,17 +187,27 @@ export class VideoApp extends LitElement {
 
   private get player(): HTMLVideoElement {
     const player = this.querySelector("video");
-    if (!player) throw new Error("Missing video element");
+    if (!player) {
+      throw new Error("Missing video element");
+    }
+
     return player;
   }
 
   private async loadHistory(): Promise<void> {
     const request = ++this.historyRequest;
+
     try {
       const response = await fetch("/api/history");
-      if (!response.ok) throw new Error("Could not load history.");
+      if (!response.ok) {
+        throw new Error("Could not load history.");
+      }
+
       const entries = HistoryListSchema.parse(await response.json());
-      if (request !== this.historyRequest) return;
+      if (request !== this.historyRequest) {
+        return;
+      }
+
       // A history read may have started before the latest progress save.
       this.history = entries.map((entry) =>
         this.watchRecorded && entry.id === this.source?.id
@@ -187,9 +216,11 @@ export class VideoApp extends LitElement {
       );
       this.historyError = "";
     } catch {
-      if (request !== this.historyRequest) return;
-      this.historyError =
-        "Could not load watch history. Playback is still available.";
+      if (request !== this.historyRequest) {
+        return;
+      }
+
+      this.historyError = "Could not load watch history. Playback is still available.";
     }
   }
 
@@ -199,9 +230,12 @@ export class VideoApp extends LitElement {
     this.player.pause();
     this.player.removeAttribute("src");
     this.player.load();
+
     // A source reset must not leave an open speed menu over disabled controls.
     const menu = this.querySelector<HTMLElement>("media-playback-rate-menu");
-    if (menu) menu.hidden = true;
+    if (menu) {
+      menu.hidden = true;
+    }
     this.watchedThisPlay = false;
     this.watchRecorded = false;
     this.pendingResumeSeconds = null;
@@ -212,35 +246,43 @@ export class VideoApp extends LitElement {
 
   private attachSource(): boolean {
     const source = this.source;
-    if (!source) return false;
+    if (!source) {
+      return false;
+    }
     if (source.kind === "download") {
       this.player.src = source.stream;
+
       return true;
     }
     if (Hls.isSupported()) {
       const hls = new Hls();
+
       this.hls = hls;
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal && this.hls === hls)
+        if (data.fatal && this.hls === hls) {
           this.fail(`HLS playback failed: ${data.details}`);
+        }
       });
       hls.loadSource(source.hls);
       hls.attachMedia(this.player);
+
       return true;
     }
     if (this.player.canPlayType("application/vnd.apple.mpegurl")) {
       this.player.src = source.hls;
+
       return true;
     }
+
     this.fail("This browser cannot play HLS. Try Download + Native MP4.");
+
     return false;
   }
 
   private updateAddress(): void {
     const url = this.url.trim();
-    const search = url
-      ? `?${handoffSearch(url, this.mode, this.startSeconds)}`
-      : "";
+    const search = url ? `?${handoffSearch(url, this.mode, this.startSeconds)}` : "";
+
     window.history.replaceState(
       null,
       "",
@@ -267,19 +309,30 @@ export class VideoApp extends LitElement {
 
   private async copyTimestampLink(): Promise<void> {
     const source = this.source;
-    if (!source) return;
+    if (!source) {
+      return;
+    }
+
     const seconds = this.player.currentTime;
-    if (!Number.isFinite(seconds) || seconds < 0) return;
+    if (!Number.isFinite(seconds) || seconds < 0) {
+      return;
+    }
+
     const link = new URL(window.location.pathname, window.location.origin);
+
     link.search = handoffSearch(
       source.url,
       source.kind === "download" ? "mp4" : "proxy",
       Math.floor(seconds),
     );
     this.resetCopyFeedback();
+
     try {
       await navigator.clipboard.writeText(link.href);
-      if (this.source !== source || !this.isConnected) return;
+      if (this.source !== source || !this.isConnected) {
+        return;
+      }
+
       this.resetCopyFeedback();
       this.copyStatus = "Copied";
       this.copyStatusTimer = window.setTimeout(() => {
@@ -287,7 +340,10 @@ export class VideoApp extends LitElement {
         this.copyStatusTimer = undefined;
       }, 3000);
     } catch {
-      if (this.source !== source || !this.isConnected) return;
+      if (this.source !== source || !this.isConnected) {
+        return;
+      }
+
       this.resetCopyFeedback();
       this.copyStatus = "Could not copy. Copy the link below.";
       this.copyFallback = link.href;
@@ -295,17 +351,26 @@ export class VideoApp extends LitElement {
   }
 
   private async prepare(updateAddress = true): Promise<void> {
-    if (this.busy) return;
+    if (this.busy) {
+      return;
+    }
+
     const url = this.url.trim();
-    if (updateAddress) this.updateAddress();
+    if (updateAddress) {
+      this.updateAddress();
+    }
     if (!url) {
       this.fail("Enter a video URL.");
+
       return;
     }
 
     const focused = this.ownerDocument.activeElement;
+
     this.preparationFocus = focused;
+
     const generation = ++this.preparationGeneration;
+
     this.clearPoll();
     this.jobToken = null;
     this.preparation = null;
@@ -318,6 +383,7 @@ export class VideoApp extends LitElement {
     this.resetPlayer();
 
     const kind = resolveKind(this.mode);
+
     this.notice =
       kind === "proxy"
         ? { phase: "extracting", text: "Extracting YouTube HLS tracks…" }
@@ -340,22 +406,25 @@ export class VideoApp extends LitElement {
       const payload: unknown = await response.json().catch(() => null);
       if (!response.ok) {
         const failure = ApiErrorSchema.safeParse(payload);
-        throw new Error(
-          failure.success ? failure.data.error : "Could not prepare video.",
-        );
+
+        throw new Error(failure.success ? failure.data.error : "Could not prepare video.");
       }
+
       const result = ResolveResponseSchema.safeParse(payload);
       if (
         !result.success ||
-        (result.data.kind !== kind &&
-          !(kind === "download" && result.data.kind === "preparing"))
-      )
+        (result.data.kind !== kind && !(kind === "download" && result.data.kind === "preparing"))
+      ) {
         throw new Error("Server returned an invalid video response.");
+      }
       if (generation !== this.preparationGeneration || !this.isConnected) {
-        if (result.data.kind === "preparing")
+        if (result.data.kind === "preparing") {
           this.cancelKeepalive(result.data.jobToken);
+        }
+
         return;
       }
+
       if (result.data.kind === "preparing") {
         this.jobToken = result.data.jobToken;
         void this.pollPreparation(generation, this.jobToken);
@@ -365,7 +434,7 @@ export class VideoApp extends LitElement {
         void this.loadHistory();
       }
     } catch (error) {
-      if (generation === this.preparationGeneration && this.isConnected)
+      if (generation === this.preparationGeneration && this.isConnected) {
         this.fail(
           error instanceof Error && error.name === "TimeoutError"
             ? "Preparation request timed out. A download may still be running; retry preparation."
@@ -373,6 +442,7 @@ export class VideoApp extends LitElement {
               ? error.message
               : "Could not prepare video.",
         );
+      }
     } finally {
       await this.updateComplete;
       if (
@@ -380,8 +450,9 @@ export class VideoApp extends LitElement {
         focused instanceof HTMLElement &&
         focused.isConnected &&
         this.ownerDocument.activeElement === this.ownerDocument.body
-      )
+      ) {
         focused.focus();
+      }
     }
   }
 
@@ -393,11 +464,7 @@ export class VideoApp extends LitElement {
   }
 
   private activePreparation(generation: number, token: string): boolean {
-    return (
-      this.isConnected &&
-      generation === this.preparationGeneration &&
-      token === this.jobToken
-    );
+    return this.isConnected && generation === this.preparationGeneration && token === this.jobToken;
   }
 
   private finishPreparation(): void {
@@ -428,10 +495,9 @@ export class VideoApp extends LitElement {
       const generation = this.preparationGeneration;
       const canceled = snapshot.state === "canceled";
       const focused = canceled
-        ? this.querySelector<HTMLButtonElement>(
-            'button[aria-label="Prepare video"]',
-          )
+        ? this.querySelector<HTMLButtonElement>('button[aria-label="Prepare video"]')
         : this.preparationFocus;
+
       this.preparationFocus = null;
       this.finishPreparation();
       if (snapshot.state === "ready" && snapshot.video.kind === "download") {
@@ -450,64 +516,76 @@ export class VideoApp extends LitElement {
             : "Server returned an invalid video response.",
         );
       }
+
       // Prepare and the outcome notice are outside the fullscreen target.
       // Leave an empty fullscreen player on cancellation/failure, not on ready.
       const exit =
         !this.source &&
-        this.ownerDocument.fullscreenElement ===
-          this.querySelector("media-controller")
+        this.ownerDocument.fullscreenElement === this.querySelector("media-controller")
           ? this.ownerDocument.exitFullscreen().catch(() => {})
           : Promise.resolve();
+
       void Promise.all([this.updateComplete, exit]).then(() => {
         if (
           generation === this.preparationGeneration &&
           focused instanceof HTMLElement &&
           focused.isConnected &&
-          (canceled ||
-            this.ownerDocument.activeElement === this.ownerDocument.body)
+          (canceled || this.ownerDocument.activeElement === this.ownerDocument.body)
         ) {
           const fullscreen = this.ownerDocument.fullscreenElement;
-          if (fullscreen && !fullscreen.contains(focused))
+          if (fullscreen && !fullscreen.contains(focused)) {
             (this.source
               ? this.player
               : this.querySelector<HTMLElement>("media-fullscreen-button")
             )?.focus();
-          else focused.focus();
+          } else {
+            focused.focus();
+          }
         }
       });
     }
   }
 
-  private async pollPreparation(
-    generation: number,
-    token: string,
-  ): Promise<void> {
-    if (!this.activePreparation(generation, token)) return;
+  private async pollPreparation(generation: number, token: string): Promise<void> {
+    if (!this.activePreparation(generation, token)) {
+      return;
+    }
+
     const controller = new AbortController();
+
     this.pollController = controller;
+
     try {
       const response = await fetch(`/api/downloads/${token}`, {
-        signal: AbortSignal.any([
-          controller.signal,
-          AbortSignal.timeout(10_000),
-        ]),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
       });
-      if (!this.activePreparation(generation, token)) return;
+      if (!this.activePreparation(generation, token)) {
+        return;
+      }
       if (response.status === 404) {
         this.applyPreparation({
           state: "error",
-          error:
-            "Download status expired or the server restarted. Prepare video again.",
+          error: "Download status expired or the server restarted. Prepare video again.",
         });
+
         return;
       }
-      if (!response.ok) throw new Error("Progress unavailable");
+      if (!response.ok) {
+        throw new Error("Progress unavailable");
+      }
+
       const snapshot = PreparationSnapshotSchema.parse(await response.json());
-      if (!this.activePreparation(generation, token)) return;
+      if (!this.activePreparation(generation, token)) {
+        return;
+      }
+
       this.pollFailures = 0;
       this.applyPreparation(snapshot);
     } catch {
-      if (!this.activePreparation(generation, token)) return;
+      if (!this.activePreparation(generation, token)) {
+        return;
+      }
+
       this.pollFailures++;
       this.progressConnectionLost = true;
       this.notice = {
@@ -515,17 +593,15 @@ export class VideoApp extends LitElement {
         text: "Progress connection lost. Reconnecting…",
       };
     } finally {
-      if (this.pollController === controller) this.pollController = null;
+      if (this.pollController === controller) {
+        this.pollController = null;
+      }
     }
+
     if (this.activePreparation(generation, token)) {
-      const delay = Math.min(
-        8_000,
-        1_000 * 2 ** Math.min(this.pollFailures, 3),
-      );
-      this.pollTimer = window.setTimeout(
-        () => void this.pollPreparation(generation, token),
-        delay,
-      );
+      const delay = Math.min(8_000, 1_000 * 2 ** Math.min(this.pollFailures, 3));
+
+      this.pollTimer = window.setTimeout(() => void this.pollPreparation(generation, token), delay);
     }
   }
 
@@ -535,36 +611,50 @@ export class VideoApp extends LitElement {
       !token ||
       this.cancelPending ||
       this.preparation?.state === "canceling" ||
-      (this.preparation?.state === "preparing" &&
-        this.preparation.phase === "finalizing")
-    )
+      (this.preparation?.state === "preparing" && this.preparation.phase === "finalizing")
+    ) {
       return;
+    }
+
     // Invalidate any in-flight GET before sending DELETE; old ready replies
     // must not attach a source over a cancellation or a later preparation.
     const generation = ++this.preparationGeneration;
+
     this.clearPoll();
     this.cancelPending = true;
     this.cancelError = "";
     this.notice = { phase: "downloading", text: "Canceling download…" };
+
     try {
       const response = await fetch(`/api/downloads/${token}`, {
         method: "DELETE",
         signal: AbortSignal.timeout(10_000),
       });
-      if (!response.ok) throw new Error("Could not cancel");
+      if (!response.ok) {
+        throw new Error("Could not cancel");
+      }
+
       const snapshot = PreparationSnapshotSchema.parse(await response.json());
-      if (!this.activePreparation(generation, token)) return;
+      if (!this.activePreparation(generation, token)) {
+        return;
+      }
+
       this.applyPreparation(snapshot);
     } catch {
-      if (!this.activePreparation(generation, token)) return;
-      this.cancelError =
-        "Could not cancel download. It may still be running; try again.";
+      if (!this.activePreparation(generation, token)) {
+        return;
+      }
+
+      this.cancelError = "Could not cancel download. It may still be running; try again.";
       this.notice = { phase: "downloading", text: this.cancelError };
       this.progressConnectionLost = true;
     } finally {
-      if (generation === this.preparationGeneration) this.cancelPending = false;
-      if (this.activePreparation(generation, token))
+      if (generation === this.preparationGeneration) {
+        this.cancelPending = false;
+      }
+      if (this.activePreparation(generation, token)) {
         void this.pollPreparation(generation, token);
+      }
     }
   }
 
@@ -578,34 +668,44 @@ export class VideoApp extends LitElement {
   private readonly cancelOnExit = (): void => {
     ++this.preparationGeneration;
     this.clearPoll();
-    if (this.jobToken) this.cancelKeepalive(this.jobToken);
+    if (this.jobToken) {
+      this.cancelKeepalive(this.jobToken);
+    }
   };
 
   private readonly resumePreparation = (event: PageTransitionEvent): void => {
     // A back/forward-cache restore is not a new background job: reconcile the
     // cancellation sent on pagehide so the restored form does not stay busy.
-    if (event.persisted && this.jobToken)
+    if (event.persisted && this.jobToken) {
       void this.pollPreparation(this.preparationGeneration, this.jobToken);
+    }
   };
 
   private changeMode(event: Event): void {
     const value = (event.currentTarget as HTMLSelectElement).value;
-    if (value !== "proxy" && value !== "mp4") return;
+    if (value !== "proxy" && value !== "mp4") {
+      return;
+    }
+
     this.mode = value;
     this.updateAddress();
-    if (this.busy) return;
+    if (this.busy) {
+      return;
+    }
 
     if (!this.source) {
       this.notice = {
         phase: "idle",
         text: "Press Prepare video to use the selected mode.",
       };
+
       return;
     }
 
     if (this.source.kind === "download" && value === "mp4") {
       this.resetPlayer();
       this.attachReady();
+
       return;
     }
 
@@ -614,7 +714,10 @@ export class VideoApp extends LitElement {
   }
 
   private replay(entry: HistoryEntry): void {
-    if (this.busy) return;
+    if (this.busy) {
+      return;
+    }
+
     this.url = entry.url;
     this.startSeconds = undefined;
     this.mode = entry.mp4.sizeBytes !== null ? "mp4" : "proxy";
@@ -629,8 +732,9 @@ export class VideoApp extends LitElement {
 
   private readonly updateBackToPlayer = (): void => {
     const player = this.querySelector("video");
-    if (player)
+    if (player) {
       this.showBackToPlayer = player.getBoundingClientRect().bottom <= 0;
+    }
   };
 
   private showMoreHistory(): void {
@@ -641,15 +745,15 @@ export class VideoApp extends LitElement {
     this.widePlayer = !this.widePlayer;
   }
 
-  private async deleteEntry(
-    entry: HistoryEntry,
-    filesOnly: boolean,
-  ): Promise<void> {
-    if (this.busy) return;
-    const action = filesOnly
-      ? "Delete downloaded files"
-      : "Delete files and history";
-    if (!window.confirm(`${action} for "${entry.title}"?`)) return;
+  private async deleteEntry(entry: HistoryEntry, filesOnly: boolean): Promise<void> {
+    if (this.busy) {
+      return;
+    }
+
+    const action = filesOnly ? "Delete downloaded files" : "Delete files and history";
+    if (!window.confirm(`${action} for "${entry.title}"?`)) {
+      return;
+    }
 
     if (this.source?.id === entry.id) {
       this.source = null;
@@ -657,74 +761,74 @@ export class VideoApp extends LitElement {
     }
 
     this.deleting = true;
+
     try {
       const path = `/api/history/${entry.id}${filesOnly ? "/files" : ""}`;
       const response = await fetch(path, { method: "DELETE" });
       if (!response.ok) {
-        const failure = ApiErrorSchema.safeParse(
-          await response.json().catch(() => null),
-        );
-        throw new Error(
-          failure.success ? failure.data.error : "Could not delete video.",
-        );
+        const failure = ApiErrorSchema.safeParse(await response.json().catch(() => null));
+
+        throw new Error(failure.success ? failure.data.error : "Could not delete video.");
       }
 
       const payload: unknown = await response.json().catch(() => null);
-      if (!OkResponseSchema.safeParse(payload).success)
+      if (!OkResponseSchema.safeParse(payload).success) {
         throw new Error("Server returned an invalid delete response.");
+      }
 
       await this.loadHistory();
       this.notice = {
         phase: "idle",
-        text: filesOnly
-          ? "Downloaded files deleted."
-          : "Files and history deleted.",
+        text: filesOnly ? "Downloaded files deleted." : "Files and history deleted.",
       };
     } catch (error) {
-      this.fail(
-        error instanceof Error ? error.message : "Could not delete video.",
-      );
+      this.fail(error instanceof Error ? error.message : "Could not delete video.");
     } finally {
       this.deleting = false;
       await this.updateComplete;
-      const item = [
-        ...this.querySelectorAll<HTMLLIElement>(".history-item"),
-      ].find((element) => element.dataset.id === entry.id);
-      if (filesOnly && item)
+
+      const item = [...this.querySelectorAll<HTMLLIElement>(".history-item")].find(
+        (element) => element.dataset.id === entry.id,
+      );
+      if (filesOnly && item) {
         item.querySelector<HTMLButtonElement>(".history-play")?.focus();
-      else this.querySelector<HTMLElement>("#history-title")?.focus();
+      } else {
+        this.querySelector<HTMLElement>("#history-title")?.focus();
+      }
     }
   }
 
-  private async setWatchProgress(
-    entry: HistoryEntry,
-    watched: boolean,
-  ): Promise<void> {
-    if (this.busy) return;
+  private async setWatchProgress(entry: HistoryEntry, watched: boolean): Promise<void> {
+    if (this.busy) {
+      return;
+    }
+
     const failureMessage = watched
       ? "Could not mark video as watched. Try again."
       : "Could not reset watch progress. Try again.";
+
     this.updatingProgress = true;
     ++this.historyRequest;
+
     const source = this.source?.id === entry.id ? this.source : null;
     if (source) {
       // Pause without saving again; queued/in-flight writes must finish before the edit.
       this.watchRecorded = false;
       this.player.pause();
     }
-    if (this.pendingProgress?.source.id === entry.id)
+    if (this.pendingProgress?.source.id === entry.id) {
       this.pendingProgress = null;
+    }
 
     try {
       await this.progressSaved;
+
       const response = await fetch(`/api/history/${entry.id}/progress`, {
         method: watched ? "PUT" : "DELETE",
       });
-      if (
-        !response.ok ||
-        !OkResponseSchema.safeParse(await response.json()).success
-      )
+      if (!response.ok || !OkResponseSchema.safeParse(await response.json()).success) {
         throw new Error(failureMessage);
+      }
 
       if (source) {
         // Invalidate any late watch-recording response from before this edit.
@@ -750,14 +854,18 @@ export class VideoApp extends LitElement {
     } catch {
       this.historyError = failureMessage;
       // A failed edit leaves the paused source usable and its saved progress intact.
-      if (source) this.watchedThisPlay = false;
+      if (source) {
+        this.watchedThisPlay = false;
+      }
     } finally {
       this.updatingProgress = false;
       await this.updateComplete;
+
       // The action changes after editing progress; keep keyboard focus in this row.
-      const item = [
-        ...this.querySelectorAll<HTMLLIElement>(".history-item"),
-      ].find((element) => element.dataset.id === entry.id);
+      const item = [...this.querySelectorAll<HTMLLIElement>(".history-item")].find(
+        (element) => element.dataset.id === entry.id,
+      );
+
       item?.querySelector<HTMLButtonElement>(".history-play")?.focus();
     }
   }
@@ -768,21 +876,27 @@ export class VideoApp extends LitElement {
   }
 
   private resumePlayback(): void {
-    if (this.pendingResumeSeconds === null) return;
+    if (this.pendingResumeSeconds === null) {
+      return;
+    }
+
     const duration = this.player.duration;
-    if (Number.isNaN(duration) || duration <= 0) return;
+    if (Number.isNaN(duration) || duration <= 0) {
+      return;
+    }
+
     const position = this.pendingResumeSeconds;
-    const seconds = Number.isFinite(duration)
-      ? Math.min(position, duration)
-      : position;
+    const seconds = Number.isFinite(duration) ? Math.min(position, duration) : position;
+
     try {
       this.player.currentTime = seconds;
       this.pendingResumeSeconds = null;
-      if (seconds !== position && this.notice.phase === "ready")
+      if (seconds !== position && this.notice.phase === "ready") {
         this.notice = {
           phase: "ready",
           text: `Ready to continue at ${durationLabel(seconds)}. Press play in the video controls.`,
         };
+      }
     } catch {
       // Some HLS streams do not expose a seekable range immediately.
     }
@@ -790,29 +904,49 @@ export class VideoApp extends LitElement {
 
   private saveProgress(force = false): void {
     const source = this.source;
-    if (!source || !this.watchRecorded || this.updatingProgress) return;
+    if (!source || !this.watchRecorded || this.updatingProgress) {
+      return;
+    }
+
     const seconds = Math.floor(this.player.currentTime);
-    if (!Number.isFinite(seconds) || seconds < 0) return;
+    if (!Number.isFinite(seconds) || seconds < 0) {
+      return;
+    }
+
     const now = Date.now();
-    if (!force && now - this.lastProgressAt < 5000) return;
-    if (!force && seconds === this.lastProgressSeconds) return;
+    if (!force && now - this.lastProgressAt < 5000) {
+      return;
+    }
+    if (!force && seconds === this.lastProgressSeconds) {
+      return;
+    }
+
     this.lastProgressAt = now;
     this.lastProgressSeconds = seconds;
     this.pendingProgress = { source, seconds };
-    if (!this.progressInFlight) this.progressSaved = this.flushProgress();
+    if (!this.progressInFlight) {
+      this.progressSaved = this.flushProgress();
+    }
   }
 
   private async flushProgress(): Promise<void> {
-    if (this.progressInFlight) return;
+    if (this.progressInFlight) {
+      return;
+    }
+
     this.progressInFlight = true;
+
     try {
       while (this.pendingProgress) {
         const { source, seconds } = this.pendingProgress;
+
         this.pendingProgress = null;
+
         const request: ProgressRequest = {
           token: source.token,
           positionSeconds: seconds,
         };
+
         try {
           const response = await fetch(`/api/history/${source.id}/progress`, {
             method: "POST",
@@ -820,16 +954,13 @@ export class VideoApp extends LitElement {
             body: JSON.stringify(request),
             keepalive: true,
           });
-          if (
-            !response.ok ||
-            !OkResponseSchema.safeParse(await response.json()).success
-          )
+          if (!response.ok || !OkResponseSchema.safeParse(await response.json()).success) {
             continue;
+          }
+
           source.positionSeconds = seconds;
           this.history = this.history.map((entry) =>
-            entry.id === source.id
-              ? { ...entry, positionSeconds: seconds }
-              : entry,
+            entry.id === source.id ? { ...entry, positionSeconds: seconds } : entry,
           );
         } catch {
           // A later time update or pause can retry saving the position.
@@ -841,18 +972,22 @@ export class VideoApp extends LitElement {
   }
 
   private readonly saveOnHide = (): void => {
-    if (document.visibilityState === "hidden") this.saveProgress(true);
+    if (document.visibilityState === "hidden") {
+      this.saveProgress(true);
+    }
   };
 
   private focusRateMenu(event: Event): void {
     const menu = event.currentTarget as HTMLElement;
-    if (event.target !== menu || menu.hidden) return;
+    if (event.target !== menu || menu.hidden) {
+      return;
+    }
+
     // Complete the menu's transition-driven focus handoff when animations are
     // disabled or coalesced, consuming the pending once-listener as well.
-    if (menu.getAnimations().length === 0)
-      menu.dispatchEvent(
-        new TransitionEvent("transitionend", { propertyName: "opacity" }),
-      );
+    if (menu.getAnimations().length === 0) {
+      menu.dispatchEvent(new TransitionEvent("transitionend", { propertyName: "opacity" }));
+    }
   }
 
   private readonly toggleFullscreen = (): void => {
@@ -861,29 +996,21 @@ export class VideoApp extends LitElement {
   };
 
   private handleSeekKey(event: KeyboardEvent): void {
-    if (
-      !this.source ||
-      event.defaultPrevented ||
-      event.altKey ||
-      event.ctrlKey ||
-      event.metaKey
-    )
+    if (!this.source || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
       return;
+    }
+
     // Keep all player shortcuts available while the seek slider is focused.
     // Prevent native range steps for handled keys; leave Home/End alone.
-    if (controlPlayer(this.player, event, this.toggleFullscreen))
+    if (controlPlayer(this.player, event, this.toggleFullscreen)) {
       event.preventDefault();
+    }
   }
 
   private readonly handlePlayerKey = (event: KeyboardEvent): void => {
-    if (
-      !this.source ||
-      event.defaultPrevented ||
-      event.altKey ||
-      event.ctrlKey ||
-      event.metaKey
-    )
+    if (!this.source || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
       return;
+    }
     // event.target is retargeted at shadow boundaries. Let buttons, ranges and
     // menus own their keys even when their internal input is hidden from target.
     if (
@@ -897,17 +1024,23 @@ export class VideoApp extends LitElement {
             ) ||
               (target as HTMLElement).isContentEditable),
         )
-    )
+    ) {
       return;
+    }
 
-    if (controlPlayer(this.player, event, this.toggleFullscreen))
+    if (controlPlayer(this.player, event, this.toggleFullscreen)) {
       event.preventDefault();
+    }
   };
 
   private async playing(): Promise<void> {
     const source = this.source;
-    if (!source || this.watchedThisPlay || this.updatingProgress) return;
+    if (!source || this.watchedThisPlay || this.updatingProgress) {
+      return;
+    }
+
     this.watchedThisPlay = true;
+
     try {
       const request: WatchRequest = { token: source.token };
       const response = await fetch(`/api/history/${source.id}/watched`, {
@@ -915,26 +1048,33 @@ export class VideoApp extends LitElement {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
       });
-      if (
-        !response.ok ||
-        !OkResponseSchema.safeParse(await response.json()).success
-      )
+      if (!response.ok || !OkResponseSchema.safeParse(await response.json()).success) {
         throw new Error("Could not save watch history.");
-      if (this.source !== source || this.updatingProgress) return;
+      }
+      if (this.source !== source || this.updatingProgress) {
+        return;
+      }
+
       this.watchRecorded = true;
-      if (this.player.paused) this.saveProgress(true);
+      if (this.player.paused) {
+        this.saveProgress(true);
+      }
       void this.loadHistory();
     } catch {
-      if (this.source === source)
+      if (this.source === source) {
         this.notice = {
           ...this.notice,
           text: "Playing, but could not save watch history.",
         };
+      }
     }
   }
 
   private playbackError(): void {
-    if (!this.source || !this.player.currentSrc) return;
+    if (!this.source || !this.player.currentSrc) {
+      return;
+    }
+
     this.fail(
       this.source.kind === "proxy"
         ? "Proxy playback failed. Signed links may have expired; prepare the video again."
@@ -961,8 +1101,15 @@ export class VideoApp extends LitElement {
       ${this.renderPlayer()}
       ${
         this.showBackToPlayer
-          ? html`<button class="back-to-player plain <big>" type="button"
-              @click=${this.focusPlayer}>Back to player</button>`
+          ? html`
+              <button
+                class="back-to-player plain <big>"
+                type="button"
+                @click=${this.focusPlayer}
+              >
+                Back to player
+              </button>
+            `
           : ""
       }
       ${this.renderHistory()}
@@ -980,96 +1127,178 @@ export class VideoApp extends LitElement {
         : this.notice.phase === "ready"
           ? "ok color"
           : "info color";
+    const playerClass = `player-panel console${this.widePlayer ? " wide-player" : ""}`;
 
     return html`
-      <section class=${`player-panel console${this.widePlayer ? " wide-player" : ""}`} aria-labelledby="player-title">
+      <section class=${playerClass} aria-labelledby="player-title">
         <h2 id="player-title" class="vh">Player</h2>
+
         <form id="resolve" @submit=${this.submit}>
           <label class="vh" for="url">YouTube video URL</label>
           <label class="vh" for="player-mode">Playback mode</label>
           <div class="player-controls tool-bar">
-            <input id="url" type="url" placeholder="https://www.youtube.com/watch?v=…"
-              autocomplete="url" required .value=${this.url} @input=${this.changeUrl}
-              ?disabled=${this.busy}>
-            <select id="player-mode" .value=${this.mode} @change=${this.changeMode}
-              ?disabled=${this.busy}>
+            <input
+              id="url"
+              type="url"
+              placeholder="https://www.youtube.com/watch?v=…"
+              autocomplete="url"
+              required
+              .value=${this.url}
+              @input=${this.changeUrl}
+              ?disabled=${this.busy}
+            >
+            <select
+              id="player-mode"
+              .value=${this.mode}
+              @change=${this.changeMode}
+              ?disabled=${this.busy}
+            >
               <option value="proxy">Proxy YouTube HLS (starts sooner)</option>
               <option value="mp4">Download + Native MP4</option>
             </select>
             <strong>
-              <button class="console <big>" type="submit" aria-label="Prepare video"
-                title="Prepare video" ?disabled=${this.busy}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#prepare-icon"></use></svg>
+              <button
+                class="console <big>"
+                type="submit"
+                aria-label="Prepare video"
+                title="Prepare video"
+                ?disabled=${this.busy}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <use href="#prepare-icon"></use>
+                </svg>
               </button>
             </strong>
-            <button class="plain <big>" type="button" aria-pressed=${this.widePlayer}
-              @click=${this.togglePlayerWidth}>Fill page</button>
+            <button
+              class="plain <big>"
+              type="button"
+              aria-pressed=${this.widePlayer}
+              @click=${this.togglePlayerWidth}
+            >
+              Fill page
+            </button>
           </div>
         </form>
-        <p id="status" class=${statusColorway} data-phase=${this.notice.phase} role="status" aria-live="polite">${this.notice.text}</p>
+
+        <p
+          id="status"
+          class=${statusColorway}
+          data-phase=${this.notice.phase}
+          role="status"
+          aria-live="polite"
+        >${this.notice.text}</p>
         ${
           this.notice.phase === "error"
-            ? html`<p class="hint">${
-                this.mode === "proxy"
-                  ? "Retry preparation or choose Download + Native MP4."
-                  : "Retry preparation or try Proxy YouTube HLS."
-              }</p>`
+            ? html`
+                <p class="hint">${
+                  this.mode === "proxy"
+                    ? "Retry preparation or choose Download + Native MP4."
+                    : "Retry preparation or try Proxy YouTube HLS."
+                }</p>
+              `
             : ""
         }
         ${
           this.source
-            ? html`<h3 id="title">${this.source.title}</h3>
-          <p class="video-meta">${this.source.channel ? html`${this.source.channel} · ` : ""}${durationLabel(this.source.duration)}</p>`
+            ? html`
+                <h3 id="title">${this.source.title}</h3>
+                <p class="video-meta">${
+                  this.source.channel ? html`${this.source.channel} · ` : ""
+                }${durationLabel(this.source.duration)}</p>
+              `
             : ""
         }
-        <media-controller class="player-controller" nohotkeys novolumepref nomutedpref
+
+        <media-controller
+          class="player-controller"
+          nohotkeys
+          novolumepref
+          nomutedpref
           ?noautohide=${this.notice.phase === "downloading"}
-          defaultstreamtype="on-demand" ?gesturesdisabled=${!this.source}>
+          defaultstreamtype="on-demand"
+          ?gesturesdisabled=${!this.source}
+        >
           <!-- biome-ignore lint/a11y/useMediaCaption: Captions are not extracted in this app. -->
-          <video id="player" slot="media" playsinline preload="none" tabindex="0" aria-label="Video player"
-            @play=${this.startedPlay} @playing=${this.playing} @loadedmetadata=${this.resumePlayback}
+          <video
+            id="player"
+            slot="media"
+            playsinline
+            preload="none"
+            tabindex="0"
+            aria-label="Video player"
+            @play=${this.startedPlay}
+            @playing=${this.playing}
+            @loadedmetadata=${this.resumePlayback}
             @canplay=${this.resumePlayback}
             @timeupdate=${() => this.saveProgress()}
             @pause=${() => this.saveProgress(true)}
             @ended=${() => this.saveProgress(true)}
-            @error=${this.playbackError}></video>
+            @error=${this.playbackError}
+          ></video>
           ${this.renderPreparation()}
-          <media-playback-rate-menu hidden anchor="auto" @toggle=${this.focusRateMenu}
+          <media-playback-rate-menu
+            hidden
+            anchor="auto"
+            @toggle=${this.focusRateMenu}
             rates="0.25 0.5 0.75 1 1.25 1.5 1.75 2"
-            ?disabled=${!this.source} aria-disabled=${this.source ? nothing : "true"}>
-          </media-playback-rate-menu>
+            ?disabled=${!this.source}
+            aria-disabled=${this.source ? nothing : "true"}
+          ></media-playback-rate-menu>
           <media-control-bar class="player-actions">
             <!-- Block activation too: tooltip setup can attach click listeners to disabled buttons. -->
-            <media-play-button .preventClick=${!this.source} ?disabled=${!this.source}
-              aria-disabled=${this.source ? nothing : "true"}></media-play-button>
-            <media-mute-button .preventClick=${!this.source} ?disabled=${!this.source}
-              aria-disabled=${this.source ? nothing : "true"}></media-mute-button>
-            <media-volume-range ?disabled=${!this.source}
-              aria-disabled=${this.source ? nothing : "true"}></media-volume-range>
-            <media-time-range ?disabled=${!this.source}
+            <media-play-button
+              .preventClick=${!this.source}
+              ?disabled=${!this.source}
               aria-disabled=${this.source ? nothing : "true"}
-              @keydown=${this.handleSeekKey}></media-time-range>
+            ></media-play-button>
+            <media-mute-button
+              .preventClick=${!this.source}
+              ?disabled=${!this.source}
+              aria-disabled=${this.source ? nothing : "true"}
+            ></media-mute-button>
+            <media-volume-range
+              ?disabled=${!this.source}
+              aria-disabled=${this.source ? nothing : "true"}
+            ></media-volume-range>
+            <media-time-range
+              ?disabled=${!this.source}
+              aria-disabled=${this.source ? nothing : "true"}
+              @keydown=${this.handleSeekKey}
+            ></media-time-range>
             <media-time-display showduration notoggle></media-time-display>
             <span class="player-control-spacer"></span>
-            <media-playback-rate-menu-button .preventClick=${!this.source} ?disabled=${!this.source}
-              aria-disabled=${this.source ? nothing : "true"}></media-playback-rate-menu-button>
+            <media-playback-rate-menu-button
+              .preventClick=${!this.source}
+              ?disabled=${!this.source}
+              aria-disabled=${this.source ? nothing : "true"}
+            ></media-playback-rate-menu-button>
             <media-fullscreen-button></media-fullscreen-button>
           </media-control-bar>
         </media-controller>
+
         <p class="hint player-shortcuts">
           Keyboard: <kbd>Space</kbd>/<kbd>K</kbd> play/pause · <kbd>←</kbd>/<kbd>→</kbd> seek 5s
           · <kbd>J</kbd>/<kbd>L</kbd> seek 10s · <kbd>&lt;</kbd>/<kbd>&gt;</kbd> speed · <kbd>M</kbd> mute
           · <kbd>F</kbd> fullscreen
         </p>
         <div class="timestamp-tools tool-bar">
-          <button class="plain <big>" type="button" ?disabled=${!this.source}
-            @click=${this.copyTimestampLink}>Copy timestamp link</button>
+          <button
+            class="plain <big>"
+            type="button"
+            ?disabled=${!this.source}
+            @click=${this.copyTimestampLink}
+          >
+            Copy timestamp link
+          </button>
           <span role="status" aria-live="polite">${this.copyStatus}</span>
           ${
             this.copyFallback
-              ? html`<label>Timestamp link
-                  <input type="text" readonly .value=${this.copyFallback}>
-                </label>`
+              ? html`
+                  <label>
+                    Timestamp link
+                    <input type="text" readonly .value=${this.copyFallback}>
+                  </label>
+                `
               : nothing
           }
         </div>
@@ -1078,23 +1307,23 @@ export class VideoApp extends LitElement {
   }
 
   private renderPreparation() {
-    if (this.notice.phase !== "downloading") return nothing;
+    if (this.notice.phase !== "downloading") {
+      return nothing;
+    }
+
     const snapshot = this.preparation;
     const progress = snapshot?.state === "preparing" ? snapshot : null;
     const phase = progress?.phase ?? "checking";
     const canceling = this.cancelPending || snapshot?.state === "canceling";
     const finalizing = phase === "finalizing";
     const postprocessing = phase === "merging" || phase === "processing";
-    const transferring =
-      !canceling && phase !== "checking" && !postprocessing && !finalizing;
+    const transferring = !canceling && phase !== "checking" && !postprocessing && !finalizing;
+
     const bytes = progress?.downloadedBytes ?? null;
     const total = progress?.totalBytes ?? null;
     const estimate = progress?.totalEstimated ? "≈ " : "";
     const percentage =
-      transferring &&
-      !this.progressConnectionLost &&
-      bytes !== null &&
-      total !== null
+      transferring && !this.progressConnectionLost && bytes !== null && total !== null
         ? Math.min(100, (bytes / total) * 100)
         : null;
     const byteText = canceling
@@ -1106,6 +1335,22 @@ export class VideoApp extends LitElement {
           : total === null
             ? `${fileSize(bytes)} downloaded`
             : `${fileSize(bytes)} of ${estimate}${fileSize(total)}`;
+    const speedText = this.progressConnectionLost
+      ? "Speed unavailable"
+      : progress?.speedBytesPerSecond == null
+        ? "Calculating speed…"
+        : `${(progress.speedBytesPerSecond / (1024 * 1024)).toFixed(1)} MiB/s`;
+
+    const progressLabel =
+      phase === "audio"
+        ? "Current audio track download"
+        : phase === "video"
+          ? "Current video track download"
+          : "MP4 preparation progress";
+    const progressValueText =
+      percentage === null
+        ? "Total size unavailable"
+        : `${estimate ? "Approximately " : ""}${Math.round(percentage)} percent of current transfer`;
     const support = canceling
       ? "Waiting for the process to stop and cleanup to finish."
       : finalizing
@@ -1119,28 +1364,54 @@ export class VideoApp extends LitElement {
               : phase === "mp4" || phase === "processing"
                 ? "Playback is ready after the MP4 is saved."
                 : "Checking saved files and available MP4 tracks.";
+
     return html`
       <div class="download-overlay" slot="centered-chrome">
         <section class="download-progress" aria-labelledby="download-heading">
           <div class="download-top">
-            <div><strong id="download-heading">Preparing MP4</strong>
-              <span class="download-phase">${canceling ? "Canceling download…" : downloadPhases[phase]}</span></div>
-            <button class="plain <big>" type="button" @click=${this.cancelDownload}
-              ?hidden=${finalizing} ?disabled=${!this.jobToken}
-              aria-disabled=${canceling ? "true" : nothing}>${canceling ? "Canceling…" : "Cancel download"}</button>
+            <div>
+              <strong id="download-heading">Preparing MP4</strong>
+              <span class="download-phase">${
+                canceling ? "Canceling download…" : downloadPhases[phase]
+              }</span>
+            </div>
+            <button
+              class="plain <big>"
+              type="button"
+              @click=${this.cancelDownload}
+              ?hidden=${finalizing}
+              ?disabled=${!this.jobToken}
+              aria-disabled=${canceling ? "true" : nothing}
+            >${canceling ? "Canceling…" : "Cancel download"}</button>
           </div>
+
           <div class="download-metrics">
             <span>${this.progressConnectionLost && !canceling ? "Last seen: " : ""}${byteText}</span>
-            ${transferring ? html`<span>${this.progressConnectionLost ? "Speed unavailable" : progress?.speedBytesPerSecond == null ? "Calculating speed…" : `${(progress.speedBytesPerSecond / (1024 * 1024)).toFixed(1)} MiB/s`}</span>` : nothing}
+            ${transferring ? html`<span>${speedText}</span>` : nothing}
             ${percentage === null ? nothing : html`<span>${estimate}${Math.round(percentage)}%</span>`}
           </div>
-          <progress max="100" value=${percentage === null ? nothing : percentage}
+          <progress
+            max="100"
+            value=${percentage === null ? nothing : percentage}
             ?hidden=${canceling || postprocessing || finalizing}
-            aria-label=${phase === "audio" ? "Current audio track download" : phase === "video" ? "Current video track download" : "MP4 preparation progress"}
-            aria-valuetext=${percentage === null ? "Total size unavailable" : `${estimate ? "Approximately " : ""}${Math.round(percentage)} percent of current transfer`}></progress>
-          <p class="download-support">${this.progressConnectionLost && !canceling ? "Reconnecting… The download may still be running." : support}</p>
+            aria-label=${progressLabel}
+            aria-valuetext=${progressValueText}
+          ></progress>
+          <p class="download-support">${
+            this.progressConnectionLost && !canceling
+              ? "Reconnecting… The download may still be running."
+              : support
+          }</p>
           ${this.cancelError ? html`<p class="download-support">${this.cancelError}</p>` : nothing}
-          ${canceling || finalizing ? nothing : html`<p class="download-support">Cancel stops this video's download in every tab. Closing this tab also cancels it.</p>`}
+          ${
+            canceling || finalizing
+              ? nothing
+              : html`
+                  <p class="download-support">
+                    Cancel stops this video's download in every tab. Closing this tab also cancels it.
+                  </p>
+                `
+          }
         </section>
       </div>
     `;
@@ -1149,32 +1420,46 @@ export class VideoApp extends LitElement {
   private renderHistory() {
     const visibleEntries = this.history.slice(0, this.visibleHistoryCount);
     const remaining = this.history.length - visibleEntries.length;
+
     return html`
       <section class="history-panel archive" aria-labelledby="history-title">
         <div class="history-heading">
           <h2 id="history-title" tabindex="-1">Watch history</h2>
-          ${this.history.length > 0 ? html`<span class="history-count">Showing ${visibleEntries.length} of ${this.history.length} ${this.history.length === 1 ? "video" : "videos"}</span>` : ""}
+          ${
+            this.history.length > 0
+              ? html`
+                  <span class="history-count">
+                    Showing ${visibleEntries.length} of ${this.history.length}
+                    ${this.history.length === 1 ? "video" : "videos"}
+                  </span>
+                `
+              : ""
+          }
         </div>
         ${this.historyError ? html`<p class="bad color" role="alert">${this.historyError}</p>` : ""}
         ${
           this.history.length === 0
             ? html`<p>Videos you play will appear here.</p>`
             : html`
-          <ul class="history-list">
-            ${visibleEntries.map((entry) => this.renderHistoryEntry(entry))}
-          </ul>
-          ${
-            remaining > 0
-              ? html`
-          <div class="history-navigation tool-bar">
-            <button class="plain <big>" type="button"
-              @click=${this.showMoreHistory}>
-              Show ${Math.min(remaining, HISTORY_CHUNK_SIZE)} more
-            </button>
-          </div>`
-              : ""
-          }
-        `
+                <ul class="history-list">
+                  ${visibleEntries.map((entry) => this.renderHistoryEntry(entry))}
+                </ul>
+                ${
+                  remaining > 0
+                    ? html`
+                        <div class="history-navigation tool-bar">
+                          <button
+                            class="plain <big>"
+                            type="button"
+                            @click=${this.showMoreHistory}
+                          >
+                            Show ${Math.min(remaining, HISTORY_CHUNK_SIZE)} more
+                          </button>
+                        </div>
+                      `
+                    : ""
+                }
+              `
         }
       </section>
     `;
@@ -1183,24 +1468,39 @@ export class VideoApp extends LitElement {
   private renderHistoryEntry(entry: HistoryEntry) {
     const mp4Available = entry.mp4.sizeBytes !== null;
     const canMarkWatched =
-      entry.duration !== null &&
-      Number.isFinite(entry.duration) &&
-      entry.duration > 0;
+      entry.duration !== null && Number.isFinite(entry.duration) && entry.duration > 0;
+    const markWatchedTitle = canMarkWatched
+      ? "Mark as fully watched"
+      : "Cannot mark as watched: duration unavailable";
+
     return html`
       <li class="history-item border-block-start" data-id=${entry.id}>
         <div class="history-details">
           <strong>${entry.title}</strong>
-          <span class="history-meta">${entry.channel ?? "Channel unavailable"} · ${durationLabel(entry.duration)}</span>
+          <span class="history-meta">
+            ${entry.channel ?? "Channel unavailable"} · ${durationLabel(entry.duration)}
+          </span>
           <span class="history-time">Watched ${new Date(entry.lastWatchedAt).toLocaleString()}</span>
           ${
             fullyWatched(entry)
               ? html`<span class="history-watched">✓ Fully watched</span>`
               : entry.positionSeconds > 0
-                ? html`<span class="history-time">Continue at ${durationLabel(entry.positionSeconds)}</span>`
+                ? html`
+                    <span class="history-time">
+                      Continue at ${durationLabel(entry.positionSeconds)}
+                    </span>
+                  `
                 : ""
           }
-          <a class="original-link" href=${entry.url} target="_blank" rel="noopener noreferrer"
-            aria-label=${`Open ${entry.title} on YouTube`}>Open on YouTube ↗</a>
+          <a
+            class="original-link"
+            href=${entry.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label=${`Open ${entry.title} on YouTube`}
+          >
+            Open on YouTube ↗
+          </a>
           <span class="badges" aria-label="Downloaded files">
             ${
               mp4Available
@@ -1209,46 +1509,80 @@ export class VideoApp extends LitElement {
             }
           </span>
         </div>
+
         <div class="history-actions tool-bar">
-          <button class="history-play info iconbutton <big>" type="button"
-            aria-label=${`Play ${entry.title}`} title="Play" ?disabled=${this.busy}
-            @click=${() => this.replay(entry)}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#play-icon"></use></svg>
+          <button
+            class="history-play info iconbutton <big>"
+            type="button"
+            aria-label=${`Play ${entry.title}`}
+            title="Play"
+            ?disabled=${this.busy}
+            @click=${() => this.replay(entry)}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <use href="#play-icon"></use>
+            </svg>
           </button>
           ${
             entry.positionSeconds > 0
               ? html`
-            <button class="plain iconbutton <big>" type="button"
-              aria-label=${`Reset watch progress for ${entry.title}`} title="Reset watch progress"
-              ?disabled=${this.busy} @click=${() => this.setWatchProgress(entry, false)}>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#reset-progress-icon"></use></svg>
-            </button>
-          `
+                  <button
+                    class="plain iconbutton <big>"
+                    type="button"
+                    aria-label=${`Reset watch progress for ${entry.title}`}
+                    title="Reset watch progress"
+                    ?disabled=${this.busy}
+                    @click=${() => this.setWatchProgress(entry, false)}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <use href="#reset-progress-icon"></use>
+                    </svg>
+                  </button>
+                `
               : html`
-            <button class="plain iconbutton <big>" type="button"
-              aria-label=${`Mark ${entry.title} as fully watched`}
-              title=${canMarkWatched ? "Mark as fully watched" : "Cannot mark as watched: duration unavailable"}
-              ?disabled=${this.busy || !canMarkWatched}
-              @click=${() => this.setWatchProgress(entry, true)}>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#mark-watched-icon"></use></svg>
-            </button>
-          `
+                  <button
+                    class="plain iconbutton <big>"
+                    type="button"
+                    aria-label=${`Mark ${entry.title} as fully watched`}
+                    title=${markWatchedTitle}
+                    ?disabled=${this.busy || !canMarkWatched}
+                    @click=${() => this.setWatchProgress(entry, true)}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <use href="#mark-watched-icon"></use>
+                    </svg>
+                  </button>
+                `
           }
           ${
             mp4Available
               ? html`
-            <button class="warn iconbutton <big>" type="button"
-              aria-label=${`Delete downloaded files for ${entry.title}`} title="Delete files"
-              ?disabled=${this.busy} @click=${() => this.deleteEntry(entry, true)}>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#delete-file-icon"></use></svg>
-            </button>
-          `
+                  <button
+                    class="warn iconbutton <big>"
+                    type="button"
+                    aria-label=${`Delete downloaded files for ${entry.title}`}
+                    title="Delete files"
+                    ?disabled=${this.busy}
+                    @click=${() => this.deleteEntry(entry, true)}
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <use href="#delete-file-icon"></use>
+                    </svg>
+                  </button>
+                `
               : ""
           }
-          <button class="bad iconbutton <big>" type="button"
-            aria-label=${`Delete files and history for ${entry.title}`} title="Delete files and history"
-            ?disabled=${this.busy} @click=${() => this.deleteEntry(entry, false)}>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#delete-history-icon"></use></svg>
+          <button
+            class="bad iconbutton <big>"
+            type="button"
+            aria-label=${`Delete files and history for ${entry.title}`}
+            title="Delete files and history"
+            ?disabled=${this.busy}
+            @click=${() => this.deleteEntry(entry, false)}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <use href="#delete-history-icon"></use>
+            </svg>
           </button>
         </div>
       </li>

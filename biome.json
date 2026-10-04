@@ -10,17 +10,26 @@
   },
   "formatter": {
     "enabled": true,
-    "useEditorconfig": true
+    "useEditorconfig": true,
+    "lineWidth": 100
   },
   "linter": {
     "enabled": true,
     "rules": {
-      "preset": "recommended"
+      "preset": "recommended",
+      "style": {
+        "useBlockStatements": "error"
+      }
     }
   },
   "javascript": {
     "formatter": {
       "quoteStyle": "double"
+    }
+  },
+  "html": {
+    "formatter": {
+      "enabled": true
     }
   },
   "assist": {

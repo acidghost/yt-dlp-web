@@ -17,19 +17,24 @@ test("both signals share real application shutdown; staging/SQLite outlive downl
       await writeFile(path, "partial");
       started.release();
       await new Promise<void>((resolve) => {
-        if (options?.signal.aborted) resolve();
-        else
+        if (options?.signal.aborted) {
+          resolve();
+        } else {
           options?.signal.addEventListener("abort", () => resolve(), {
             once: true,
           });
+        }
       });
       await cleanup.promise;
       throw new DOMException("Canceled", "AbortError");
     },
   });
   const response = await requestResolve(base);
+
   expect(response.status).toBe(202);
+
   await started.promise;
+
   const complete = mock();
   const cancelTimer = mock();
   const closeDb = spyOn(Library.prototype, "close");
@@ -39,31 +44,36 @@ test("both signals share real application shutdown; staging/SQLite outlive downl
     complete,
     schedule: (_callback, ms) => {
       expect(ms).toBe(5000);
+
       return cancelTimer;
     },
   });
   const signals = new EventEmitter();
   const unsubscribe = registerSignals(signals, shutdown);
+
   try {
     signals.emit("SIGTERM");
+
     const closing = shutdown("SIGTERM");
+
     signals.emit("SIGINT");
+
     expect(shutdown("SIGINT")).toBe(closing);
     expect(complete).not.toHaveBeenCalled();
     expect(closeDb).not.toHaveBeenCalled();
     expect(
-      (await readdir(join(fixture.dataDir, "media", "abcdefghijk"))).some(
-        (name) => name.startsWith(".staging-"),
+      (await readdir(join(fixture.dataDir, "media", "abcdefghijk"))).some((name) =>
+        name.startsWith(".staging-"),
       ),
     ).toBe(true);
+
     cleanup.release();
+
     expect(await closing).toBe("graceful");
     expect(complete.mock.calls).toEqual([["graceful"]]);
     expect(cancelTimer).toHaveBeenCalledTimes(1);
     expect(closeDb).toHaveBeenCalledTimes(1);
-    expect(
-      await readdir(join(fixture.dataDir, "media", "abcdefghijk")),
-    ).toEqual([]);
+    expect(await readdir(join(fixture.dataDir, "media", "abcdefghijk"))).toEqual([]);
     await expect(fetch(`${base}/healthz`)).rejects.toThrow();
   } finally {
     cleanup.release();
@@ -71,6 +81,7 @@ test("both signals share real application shutdown; staging/SQLite outlive downl
     unsubscribe();
     closeDb.mockRestore();
   }
+
   expect(signals.listenerCount("SIGTERM")).toBe(0);
   expect(signals.listenerCount("SIGINT")).toBe(0);
 });
@@ -90,20 +101,27 @@ test("five-second deadline force-stops HTTP without claiming or abandoning pendi
     log,
     schedule: (callback, ms) => {
       expect(ms).toBe(5000);
+
       deadline = callback;
+
       return mock();
     },
   });
   const closing = shutdown("SIGTERM");
+
   expect(shutdown("SIGINT")).toBe(closing);
   expect(app.close).toHaveBeenCalledTimes(1);
+
   deadline();
+
   expect(await closing).toBe("forced");
   expect(app.forceStopHttp).toHaveBeenCalledTimes(1);
   expect(complete.mock.calls).toEqual([["forced"]]);
+
   // A late failure is observed/logged, not an unhandled rejection or second exit.
   cleanup.reject(new Error("unconfirmed writer"));
   await Promise.resolve();
+
   expect(log).toHaveBeenCalledTimes(2);
   expect(complete).toHaveBeenCalledTimes(1);
 });
@@ -120,6 +138,7 @@ test("unsafe cleanup is a failed shutdown, not graceful success", async () => {
     log: mock(),
     complete,
   });
+
   expect(await shutdown("SIGINT")).toBe("failed");
   expect(complete.mock.calls).toEqual([["failed"]]);
 });
