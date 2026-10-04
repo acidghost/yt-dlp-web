@@ -58,17 +58,17 @@ proxy extracts fresh signed URLs; switching to MP4 reuses an existing download.
 
 ### Download progress and cancellation
 
-While preparing a new MP4, the player shows **current-transfer bytes, speed,
-and percentage**. Video and audio download separately, so the numbers reset
-when the labeled phase changes. `≈` marks an estimated total; unknown totals
-use an indeterminate bar. Sizes use binary units (MiB), speed is MiB/s, and
-missing or stale speed is not presented as a current rate. Combining tracks,
-other MP4 processing, and saving the file are separate phases, not “100% ready.”
+While preparing a new MP4, the player shows **current-transfer bytes, speed, and
+percentage**. Video and audio download separately, so the numbers reset when the
+labeled phase changes. `≈` marks an estimated total; unknown totals use an
+indeterminate bar. Sizes use binary units (MiB), speed is MiB/s, and missing or
+stale speed is not presented as a current rate. Combining tracks, other MP4
+processing, and saving the file are separate phases, not “100% ready.”
 
-**Cancel download** stops yt-dlp and its ffmpeg children, then removes unfinished
-staging files. The UI stays busy until cleanup is confirmed. Completed MP4s,
-watch history, and resume positions are not deleted. The brief **Saving MP4**
-commit phase cannot be canceled.
+**Cancel download** stops yt-dlp and its ffmpeg children, then removes
+unfinished staging files. The UI stays busy until cleanup is confirmed.
+Completed MP4s, watch history, and resume positions are not deleted. The brief
+**Saving MP4** commit phase cannot be canceled.
 
 - Requests for the same video share one download. **Cancellation is global for
   that video:** canceling in one tab stops preparation in all tabs sharing it,
@@ -80,21 +80,21 @@ commit phase cannot be canceled.
   cancellation. Merely hiding the tab does not cancel. If the request is lost,
   the shared job expires after **five minutes without polling/activity**;
   another tab's polling keeps its lease alive.
-- Progress connection failures retry automatically. A failed cancel request
-  does **not** mean the process stopped; retry Cancel if needed.
+- Progress connection failures retry automatically. A failed cancel request does
+  **not** mean the process stopped; retry Cancel if needed.
 - At most **two downloads** run concurrently. Jobs live in memory; abandoned
   staging is also cleaned on startup. Refresh recovery, background jobs, and
   pause/resume are not supported.
 
-The in-repo client polls status about once a second. For MP4, `POST /api/resolve`
-returns either `200 ResolvedVideo` for a saved file or
+The in-repo client polls status about once a second. For MP4,
+`POST /api/resolve` returns either `200 ResolvedVideo` for a saved file or
 `202 { kind: "preparing", jobToken }` for a shared preparation. Poll
 `GET /api/downloads/:jobToken`; `DELETE` on that URL cancels the shared job.
 Terminal status is retained for two minutes (at most 64 terminal jobs), without
 affecting saved MP4s. The former synchronous MP4 download API is not retained;
-proxy resolves remain unchanged. All job routes retain the existing
-Host/Origin checks, cancellation additionally checks Fetch Metadata, and
-responses are not cached.
+proxy resolves remain unchanged. All job routes retain the existing Host/Origin
+checks, cancellation additionally checks Fetch Metadata, and responses are not
+cached.
 
 ### Player controls
 
@@ -162,6 +162,47 @@ server.
 Watch history is recorded **when playback actually starts**, not when a URL is
 resolved. History **Play** uses the downloaded MP4 when available; otherwise it
 prepares a fresh proxy session.
+
+### Search and manage your library
+
+The **Library** below the player has two local views:
+
+- **Watch history** keeps playback/resume information and the existing history
+  actions. **Recent first** / **Oldest first** order the last playback
+  timestamp, not when a video was first watched.
+- **Saved MP4s** lists every published download, including prepared-but-unplayed
+  videos and files retained after a database reset. **Largest** orders file byte
+  lengths; **Most recent** orders the MP4's filesystem modification time, shown
+  as **Modified**. It is not a guaranteed download date: yt-dlp and file
+  restores may preserve older timestamps. Size bars compare to the largest saved
+  file, not the disk's capacity. File rows offer **Play** and **Delete files**;
+  watched/reset and full-history deletion stay in Watch history.
+
+Search is a trimmed, case-insensitive, literal title **or** channel substring.
+It searches the complete active list before sorting and revealing 12 rows at a
+time. Metadata-free files use `Saved video (<id>)` and can be found by that ID.
+The query is shared across views; each view remembers its own sort during the
+page session. Query, view, or sort changes reset the revealed chunk. Refreshes
+preserve these choices and the revealed count. None of these controls changes
+playback or autoplays a video.
+
+**Saved MP4s: …** always totals the entire inventory, independent of search and
+Show more. A separate subtotal covers all matching results, not only visible
+rows. Sizes use binary units (KiB, MiB, GiB). Accounting covers only nonempty,
+regular published `DATA_DIR/media/<id>/video.mp4` file lengths; it excludes
+symlinks, staging/partial downloads, sidecars, SQLite, legacy `tmp` files,
+filesystem overhead, and free-space/capacity telemetry. Listing does not create
+history or download metadata; files without cached metadata remain playable and
+removable by ID.
+
+The UI refreshes after preparation, playback recording, cancellation cleanup,
+and deletion. Use **Refresh library** for external file changes or changes made
+in another tab; there is no background polling of the inventory. History and
+storage are independent snapshots, so concurrent changes may appear on the next
+refresh. A failed storage read shows **Storage unavailable**, or retains the
+last good inventory with an explicit stale warning—never a false zero.
+`GET /api/storage` exposes ID, nullable title/channel, size bytes, and the MP4
+modification timestamp under the same Host/Origin guards as other reads.
 
 ### Resume and watched status
 
@@ -347,20 +388,20 @@ formats, playlists, accounts, cookies, and YouTube bot checks are out of scope.
 Bun serves API/media routes via `Bun.serve` and bundles the Lit light-DOM
 player, hls.js, and missing.css locally from [`app/index.html`](app/index.html).
 
-| Command                 | Purpose |
-| ----------------------- | ------- |
-| `just dev`              | Run with watch mode on `app/index.ts` |
-| `just check`            | Run Biome checks |
-| `just typecheck`        | Run strict TypeScript checks |
-| `just test-all`         | All four test suites sequentially, including real tools and Chromium |
-| `just test-app`             | Composed Bun integration and focused unit tests; file-isolated external doubles |
-| `just test-app-shuffle [seed]` | Ordinary suite in reproducible shuffled order (default 424242) |
-| `just test-process`     | Real POSIX process-group termination contract |
-| `just test-media-tools` | Opt-in offline yt-dlp/ffmpeg progress, merging, metadata, codecs and cancellation |
-| `just test-media-tools-shuffle [seed]` | Offline tools in shuffled order (default 42) |
-| `just test-client`      | Chromium real-backend journeys and focused browser integration |
-| `just build`            | Build `dist/yt-dlp-web` with embedded HTML/JS/CSS |
-| `just start`            | Build and launch the standalone executable |
+| Command                                | Purpose                                                                           |
+| -------------------------------------- | --------------------------------------------------------------------------------- |
+| `just dev`                             | Run with watch mode on `app/index.ts`                                             |
+| `just check`                           | Run Biome checks                                                                  |
+| `just typecheck`                       | Run strict TypeScript checks                                                      |
+| `just test-all`                        | All four test suites sequentially, including real tools and Chromium              |
+| `just test-app`                        | Composed Bun integration and focused unit tests; file-isolated external doubles   |
+| `just test-app-shuffle [seed]`         | Ordinary suite in reproducible shuffled order (default 424242)                    |
+| `just test-process`                    | Real POSIX process-group termination contract                                     |
+| `just test-media-tools`                | Opt-in offline yt-dlp/ffmpeg progress, merging, metadata, codecs and cancellation |
+| `just test-media-tools-shuffle [seed]` | Offline tools in shuffled order (default 42)                                      |
+| `just test-client`                     | Chromium real-backend journeys and focused browser integration                    |
+| `just build`                           | Build `dist/yt-dlp-web` with embedded HTML/JS/CSS                                 |
+| `just start`                           | Build and launch the standalone executable                                        |
 
 Ordinary tests use ephemeral ports and need no yt-dlp, ffmpeg or external
 network. In a sandbox granting only localhost port 3000, use

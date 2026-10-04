@@ -459,7 +459,8 @@ for (const filesOnly of [true, false]) {
 
     if (filesOnly) {
       await expect(page.locator(".history-item")).toContainText("Fixture video");
-      await expect(page.locator(".history-item")).toContainText("No files");
+      await expect(page.locator(".history-item chip")).toHaveCount(0);
+      await expect(page.locator(".history-item .badges")).toHaveCount(0);
       await expect(page.getByRole("button", { name: label, exact: true })).toHaveCount(0);
     } else {
       await expect(page.locator(".history-item")).toHaveCount(0);

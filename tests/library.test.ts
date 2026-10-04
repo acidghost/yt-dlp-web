@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Library, resetLibrary } from "../app/library";
@@ -120,6 +120,11 @@ test("reset removes only database sidecars; media and legacy files survive a fre
     await mkdir(media, { recursive: true });
     await mkdir(join(dir, "tmp"));
     await writeFile(join(media, "video.mp4"), "saved");
+    await utimes(
+      join(media, "video.mp4"),
+      new Date("2026-09-01T12:00:00Z"),
+      new Date("2026-09-01T12:00:00Z"),
+    );
     await writeFile(join(dir, "tmp", "legacy.mp4"), "legacy");
 
     for (const suffix of ["-wal", "-shm", "-journal"]) {
@@ -137,6 +142,10 @@ test("reset removes only database sidecars; media and legacy files survive a fre
 
     library = new Library(dir);
 
+    expect(await library.list()).toEqual([]);
+    expect(await library.storage()).toEqual([
+      { id, title: null, channel: null, sizeBytes: 5, modifiedAt: "2026-09-01T12:00:00.000Z" },
+    ]);
     expect(await library.list()).toEqual([]);
   } finally {
     library?.close();

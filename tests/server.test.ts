@@ -133,7 +133,12 @@ test("bundles the player and its assets", async () => {
   expect(client).toContain("Delete files and history");
   expect(client).toContain("Delete files");
   expect(client).toContain("Prepare video");
-  expect(client).toContain("No files");
+  expect(client).not.toContain("No files");
+  expect(client).not.toContain("Published MP4 file lengths only");
+  expect(client).not.toContain("Recent first and Oldest first use");
+  expect(client).not.toContain("Most recent uses MP4 modification time");
+  expect(client).not.toContain("Bars compare file sizes");
+  expect(client).not.toContain("library-sort-note");
   expect(client).toContain("Open on YouTube");
   expect(client).toContain("Channel unavailable");
 

@@ -3,6 +3,7 @@ import { html, LitElement, nothing } from "lit";
 import "media-chrome";
 import "media-chrome/menu";
 import { customElement, state } from "lit/decorators.js";
+import { repeat } from "lit/directives/repeat.js";
 import {
   ApiErrorSchema,
   type HistoryEntry,
@@ -14,6 +15,8 @@ import {
   type ResolvedVideo,
   type ResolveRequest,
   ResolveResponseSchema,
+  type StorageFile,
+  StorageListSchema,
   type WatchRequest,
 } from "../protocol";
 import {
@@ -23,6 +26,13 @@ import {
   resolveKind,
   videoStartSeconds,
 } from "./handoff";
+import {
+  type FilesSort,
+  type HistorySort,
+  historyView,
+  savedTitle,
+  storageView,
+} from "./library-view";
 import { controlPlayer } from "./player-keys";
 import { fullyWatched, resumePosition } from "./watch-progress";
 
@@ -100,6 +110,15 @@ export class VideoApp extends LitElement {
 
   @state() private history: HistoryEntry[] = [];
   @state() private historyError = "";
+  @state() private historyLoaded = false;
+  @state() private storage: StorageFile[] | null = null;
+  @state() private storageError = "";
+  @state() private storageStale = false;
+  private storageRequest = 0;
+  @state() private libraryView: "history" | "files" = "history";
+  @state() private libraryQuery = "";
+  @state() private historySort: HistorySort = "recent";
+  @state() private filesSort: FilesSort = "largest";
 
   @state() private widePlayer = false;
   @state() private showBackToPlayer = false;
@@ -160,7 +179,7 @@ export class VideoApp extends LitElement {
     window.addEventListener("pageshow", this.resumePreparation);
     document.addEventListener("visibilitychange", this.saveOnHide);
     document.addEventListener("keydown", this.handlePlayerKey);
-    void this.loadHistory();
+    void this.refreshLibrary();
     if (this.jobToken) {
       void this.pollPreparation(this.preparationGeneration, this.jobToken);
     }
@@ -215,6 +234,7 @@ export class VideoApp extends LitElement {
           : entry,
       );
       this.historyError = "";
+      this.historyLoaded = true;
     } catch {
       if (request !== this.historyRequest) {
         return;
@@ -222,6 +242,41 @@ export class VideoApp extends LitElement {
 
       this.historyError = "Could not load watch history. Playback is still available.";
     }
+  }
+
+  private async loadStorage(): Promise<void> {
+    const request = ++this.storageRequest;
+
+    try {
+      const response = await fetch("/api/storage");
+      if (!response.ok) {
+        throw new Error("Could not load storage.");
+      }
+      const files = StorageListSchema.parse(await response.json());
+      if (request !== this.storageRequest) {
+        return;
+      }
+
+      this.storage = files;
+      this.storageError = "";
+      this.storageStale = false;
+    } catch {
+      if (request !== this.storageRequest) {
+        return;
+      }
+      this.storageError = "Could not load saved MP4s. Refresh library to try again.";
+      this.storageStale = true;
+    }
+  }
+
+  private async refreshLibrary(): Promise<void> {
+    // Each read owns its error and generation; neither suppresses the other.
+    await Promise.all([this.loadHistory(), this.loadStorage()]);
+  }
+
+  private invalidateStorage(): void {
+    ++this.storageRequest;
+    this.storageStale = true;
   }
 
   private resetPlayer(): void {
@@ -383,6 +438,9 @@ export class VideoApp extends LitElement {
     this.resetPlayer();
 
     const kind = resolveKind(this.mode);
+    if (kind === "download") {
+      this.invalidateStorage();
+    }
 
     this.notice =
       kind === "proxy"
@@ -431,7 +489,7 @@ export class VideoApp extends LitElement {
       } else {
         this.source = result.data;
         this.attachReady();
-        void this.loadHistory();
+        void this.refreshLibrary();
       }
     } catch (error) {
       if (generation === this.preparationGeneration && this.isConnected) {
@@ -442,6 +500,7 @@ export class VideoApp extends LitElement {
               ? error.message
               : "Could not prepare video.",
         );
+        void this.refreshLibrary();
       }
     } finally {
       await this.updateComplete;
@@ -503,7 +562,6 @@ export class VideoApp extends LitElement {
       if (snapshot.state === "ready" && snapshot.video.kind === "download") {
         this.source = snapshot.video;
         this.attachReady();
-        void this.loadHistory();
       } else if (snapshot.state === "canceled") {
         this.notice = {
           phase: "canceled",
@@ -516,6 +574,9 @@ export class VideoApp extends LitElement {
             : "Server returned an invalid video response.",
         );
       }
+
+      // Terminal status arrives after publication or cancellation/error cleanup.
+      void this.refreshLibrary();
 
       // Prepare and the outcome notice are outside the fullscreen target.
       // Leave an empty fullscreen player on cancellation/failure, not on ready.
@@ -621,6 +682,7 @@ export class VideoApp extends LitElement {
     const generation = ++this.preparationGeneration;
 
     this.clearPoll();
+    this.invalidateStorage();
     this.cancelPending = true;
     this.cancelError = "";
     this.notice = { phase: "downloading", text: "Canceling download…" };
@@ -713,7 +775,7 @@ export class VideoApp extends LitElement {
     void this.prepare(false);
   }
 
-  private replay(entry: HistoryEntry): void {
+  private replay(entry: Pick<HistoryEntry, "url" | "mp4">): void {
     if (this.busy) {
       return;
     }
@@ -737,6 +799,35 @@ export class VideoApp extends LitElement {
     }
   };
 
+  private changeLibraryView(view: "history" | "files"): void {
+    this.libraryView = view;
+    this.visibleHistoryCount = HISTORY_CHUNK_SIZE;
+  }
+
+  private changeLibraryQuery(event: Event): void {
+    this.libraryQuery = (event.currentTarget as HTMLInputElement).value;
+    this.visibleHistoryCount = HISTORY_CHUNK_SIZE;
+  }
+
+  private async clearLibrarySearch(): Promise<void> {
+    this.libraryQuery = "";
+    this.visibleHistoryCount = HISTORY_CHUNK_SIZE;
+    await this.updateComplete;
+    this.querySelector<HTMLInputElement>("#library-query")?.focus();
+  }
+
+  private changeLibrarySort(event: Event): void {
+    const sort = (event.currentTarget as HTMLSelectElement).value;
+    if (this.libraryView === "history" && (sort === "recent" || sort === "oldest")) {
+      this.historySort = sort;
+    } else if (this.libraryView === "files" && (sort === "largest" || sort === "most-recent")) {
+      this.filesSort = sort;
+    } else {
+      return;
+    }
+    this.visibleHistoryCount = HISTORY_CHUNK_SIZE;
+  }
+
   private showMoreHistory(): void {
     this.visibleHistoryCount += HISTORY_CHUNK_SIZE;
   }
@@ -745,7 +836,10 @@ export class VideoApp extends LitElement {
     this.widePlayer = !this.widePlayer;
   }
 
-  private async deleteEntry(entry: HistoryEntry, filesOnly: boolean): Promise<void> {
+  private async deleteEntry(
+    entry: Pick<HistoryEntry, "id" | "title">,
+    filesOnly: boolean,
+  ): Promise<void> {
     if (this.busy) {
       return;
     }
@@ -761,6 +855,8 @@ export class VideoApp extends LitElement {
     }
 
     this.deleting = true;
+    ++this.historyRequest;
+    this.invalidateStorage();
 
     try {
       const path = `/api/history/${entry.id}${filesOnly ? "/files" : ""}`;
@@ -776,7 +872,7 @@ export class VideoApp extends LitElement {
         throw new Error("Server returned an invalid delete response.");
       }
 
-      await this.loadHistory();
+      await this.refreshLibrary();
       this.notice = {
         phase: "idle",
         text: filesOnly ? "Downloaded files deleted." : "Files and history deleted.",
@@ -787,7 +883,8 @@ export class VideoApp extends LitElement {
       this.deleting = false;
       await this.updateComplete;
 
-      const item = [...this.querySelectorAll<HTMLLIElement>(".history-item")].find(
+      const selector = this.libraryView === "history" ? ".history-item" : ".saved-file-item";
+      const item = [...this.querySelectorAll<HTMLElement>(selector)].find(
         (element) => element.dataset.id === entry.id,
       );
       if (filesOnly && item) {
@@ -866,7 +963,11 @@ export class VideoApp extends LitElement {
         (element) => element.dataset.id === entry.id,
       );
 
-      item?.querySelector<HTMLButtonElement>(".history-play")?.focus();
+      if (item) {
+        item.querySelector<HTMLButtonElement>(".history-play")?.focus();
+      } else {
+        this.querySelector<HTMLElement>("#history-title")?.focus();
+      }
     }
   }
 
@@ -1059,7 +1160,7 @@ export class VideoApp extends LitElement {
       if (this.player.paused) {
         this.saveProgress(true);
       }
-      void this.loadHistory();
+      void this.refreshLibrary();
     } catch {
       if (this.source === source) {
         this.notice = {
@@ -1083,6 +1184,7 @@ export class VideoApp extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    ++this.storageRequest;
     this.cancelOnExit();
     this.resetCopyFeedback();
     window.removeEventListener("scroll", this.updateBackToPlayer);
@@ -1418,50 +1520,270 @@ export class VideoApp extends LitElement {
   }
 
   private renderHistory() {
-    const visibleEntries = this.history.slice(0, this.visibleHistoryCount);
-    const remaining = this.history.length - visibleEntries.length;
+    const isHistory = this.libraryView === "history";
+    const entries = isHistory ? historyView(this.history, this.libraryQuery, this.historySort) : [];
+    const files = isHistory
+      ? []
+      : storageView(this.storage ?? [], this.libraryQuery, this.filesSort);
+    const matches = isHistory ? entries.length : files.length;
+    const visibleCount = Math.min(matches, this.visibleHistoryCount);
+    const remaining = matches - visibleCount;
+    const hasQuery = this.libraryQuery.trim().length > 0;
+    const matchedBytes = isHistory
+      ? entries.reduce((sum, entry) => sum + (entry.mp4.sizeBytes ?? 0), 0)
+      : files.reduce((sum, file) => sum + file.sizeBytes, 0);
+    const loaded = isHistory ? this.historyLoaded : this.storage !== null;
+    let resultKind = matches === 1 ? "saved MP4" : "saved MP4s";
+    if (hasQuery) {
+      resultKind = matches === 1 ? "match" : "matches";
+    } else if (isHistory) {
+      resultKind = matches === 1 ? "video" : "videos";
+    }
 
     return html`
       <section class="history-panel archive" aria-labelledby="history-title">
         <div class="history-heading">
-          <h2 id="history-title" tabindex="-1">Watch history</h2>
-          ${
-            this.history.length > 0
-              ? html`
-                  <span class="history-count">
-                    Showing ${visibleEntries.length} of ${this.history.length}
-                    ${this.history.length === 1 ? "video" : "videos"}
-                  </span>
-                `
-              : ""
-          }
+          <h2 id="history-title" tabindex="-1">Library</h2>
+          ${this.renderStorageSummary()}
         </div>
-        ${this.historyError ? html`<p class="bad color" role="alert">${this.historyError}</p>` : ""}
+        ${this.renderOutsideHistory()}
         ${
-          this.history.length === 0
-            ? html`<p>Videos you play will appear here.</p>`
-            : html`
-                <ul class="history-list">
-                  ${visibleEntries.map((entry) => this.renderHistoryEntry(entry))}
-                </ul>
-                ${
-                  remaining > 0
-                    ? html`
-                        <div class="history-navigation tool-bar">
-                          <button
-                            class="plain <big>"
-                            type="button"
-                            @click=${this.showMoreHistory}
-                          >
-                            Show ${Math.min(remaining, HISTORY_CHUNK_SIZE)} more
-                          </button>
-                        </div>
-                      `
-                    : ""
-                }
+          this.storageError || (this.storageStale && this.storage !== null)
+            ? html`
+                <p class="storage-warning warn color" role=${this.storageError ? "alert" : "status"}>
+                  ${this.storage !== null ? "Storage is stale. " : "Storage unavailable. "}
+                  ${this.storageError || "Refresh library to update saved MP4s."}
+                </p>
               `
+            : nothing
+        }
+        ${this.renderLibraryControls()}
+        ${this.historyError ? html`<p class="bad color" role="alert">${this.historyError}</p>` : nothing}
+        <div class="library-results" role="status" aria-live="polite">
+          ${loaded ? html`<span class="history-count">Showing ${visibleCount} of ${matches} ${resultKind}</span>` : nothing}
+          ${loaded && hasQuery ? html`<span class="library-subtotal">${fileSize(matchedBytes)} in all matching results</span>` : nothing}
+        </div>
+        ${
+          matches === 0
+            ? this.renderLibraryEmpty()
+            : isHistory
+              ? html`<ul class="history-list">${repeat(
+                  entries.slice(0, visibleCount),
+                  (entry) => entry.id,
+                  (entry) => this.renderHistoryEntry(entry),
+                )}</ul>`
+              : this.renderStorageTable(files.slice(0, visibleCount))
+        }
+        ${
+          remaining > 0
+            ? html`
+                <div class="history-navigation tool-bar">
+                  <button class="plain <big>" type="button" @click=${this.showMoreHistory}>
+                    Show ${Math.min(remaining, HISTORY_CHUNK_SIZE)} more
+                  </button>
+                </div>
+              `
+            : nothing
         }
       </section>
+    `;
+  }
+
+  private renderStorageSummary() {
+    const storage = this.storage;
+    const pendingLabel = this.storageError ? "Storage unavailable" : "Loading saved MP4s…";
+    const totalBytes = storage?.reduce((sum, file) => sum + file.sizeBytes, 0) ?? null;
+
+    return html`
+      <div class="library-summary">
+        <span class="storage-total">${
+          storage === null
+            ? pendingLabel
+            : html`
+                Saved MP4s: <strong>${fileSize(totalBytes)}</strong> · ${storage.length}
+                ${storage.length === 1 ? "file" : "files"}
+              `
+        }</span>
+        <button
+          class="plain"
+          type="button"
+          ?disabled=${this.busy}
+          @click=${this.refreshLibrary}
+        >Refresh library</button>
+      </div>
+    `;
+  }
+
+  private renderLibraryControls() {
+    const isHistory = this.libraryView === "history";
+    const sort = isHistory ? this.historySort : this.filesSort;
+    const options: [HistorySort | FilesSort, string][] = isHistory
+      ? [
+          ["recent", "Recent first"],
+          ["oldest", "Oldest first"],
+        ]
+      : [
+          ["largest", "Largest"],
+          ["most-recent", "Most recent"],
+        ];
+
+    return html`
+      <div class="library-toolbar">
+        <div class="library-tabs" role="group" aria-label="Library view">
+          <button
+            class="plain"
+            type="button"
+            aria-pressed=${isHistory}
+            @click=${() => this.changeLibraryView("history")}
+          >Watch history</button>
+          <button
+            class="plain"
+            type="button"
+            aria-pressed=${!isHistory}
+            @click=${() => this.changeLibraryView("files")}
+          >Saved MP4s</button>
+        </div>
+        <label class="library-search" for="library-query">Search title or channel
+          <input
+            id="library-query"
+            type="search"
+            placeholder=${isHistory ? "Search watched videos" : "Search saved MP4s"}
+            .value=${this.libraryQuery}
+            @input=${this.changeLibraryQuery}
+          >
+        </label>
+        <label class="library-sort" for="library-sort">Sort
+          <select
+            id="library-sort"
+            @change=${this.changeLibrarySort}
+          >
+            ${options.map(([value, label]) => html`<option value=${value} .selected=${value === sort}>${label}</option>`)}
+          </select>
+        </label>
+        <button
+          class="plain"
+          type="button"
+          ?hidden=${!this.libraryQuery}
+          @click=${this.clearLibrarySearch}
+        >Clear search</button>
+      </div>
+    `;
+  }
+
+  private renderOutsideHistory() {
+    if (this.storage === null || !this.historyLoaded || this.historyError) {
+      return nothing;
+    }
+    const watchedIds = new Set(this.history.map((entry) => entry.id));
+    const outside = this.storage.filter((file) => !watchedIds.has(file.id));
+    if (outside.length === 0) {
+      return nothing;
+    }
+
+    return html`<p class="storage-note">${outside.length} saved ${outside.length === 1 ? "file is" : "files are"} outside watch history (${fileSize(outside.reduce((sum, file) => sum + file.sizeBytes, 0))}).</p>`;
+  }
+
+  private renderLibraryEmpty() {
+    if (this.libraryView === "history") {
+      if (!this.historyLoaded && this.historyError) {
+        return nothing;
+      }
+      return this.history.length === 0
+        ? html`<p>Videos you play will appear here.</p>`
+        : html`<p>No videos match “${this.libraryQuery.trim()}”. Clear search to see all videos.</p>`;
+    }
+    if (this.storage === null) {
+      return nothing;
+    }
+    return this.storage.length === 0
+      ? html`<p>No saved MP4s. Download a video to save it here.</p>`
+      : html`<p>No saved MP4s match “${this.libraryQuery.trim()}”. Clear search to see all saved files.</p>`;
+  }
+
+  private renderStorageTable(files: StorageFile[]) {
+    const historyById = new Map(this.history.map((entry) => [entry.id, entry]));
+    const largestBytes = (this.storage ?? []).reduce(
+      (largest, file) => Math.max(largest, file.sizeBytes),
+      0,
+    );
+
+    return html`
+      <table class="storage-table">
+        <caption>Saved MP4s, ${this.filesSort === "largest" ? "largest first" : "most recent modification first"}</caption>
+        <thead>
+          <tr>
+            <th scope="col">Title / channel</th>
+            <th scope="col" class="size-column">MP4 size</th>
+            <th scope="col" class="action-column">Actions</th>
+          </tr>
+        </thead>
+        <tbody>${repeat(
+          files,
+          (file) => file.id,
+          (file) => this.renderStorageFile(file, historyById.get(file.id), largestBytes),
+        )}</tbody>
+      </table>
+    `;
+  }
+
+  private renderStorageFile(
+    file: StorageFile,
+    history: HistoryEntry | undefined,
+    largestBytes: number,
+  ) {
+    const title = savedTitle(file);
+    const replay = {
+      url: `https://www.youtube.com/watch?v=${file.id}`,
+      mp4: { sizeBytes: file.sizeBytes },
+    };
+
+    return html`
+      <tr class="saved-file-item" data-id=${file.id}>
+        <td class="storage-details">
+          <strong>${title}</strong>
+          <span class="history-meta">${file.channel ?? "Channel unavailable"}</span>
+          <time class="history-time" datetime=${file.modifiedAt}>Modified ${new Date(file.modifiedAt).toLocaleString()}</time>
+          ${
+            !history
+              ? html`<span class="history-time">Not in watch history</span>`
+              : fullyWatched(history)
+                ? html`<span class="history-watched">✓ Fully watched</span>`
+                : history.positionSeconds > 0
+                  ? html`<span class="history-time">Continue at ${durationLabel(history.positionSeconds)}</span>`
+                  : nothing
+          }
+        </td>
+        <td class="size-column">
+          <span>${fileSize(file.sizeBytes)}</span>
+          <span class="size-track" aria-hidden="true">
+            <span class="size-fill" style=${`width: ${(file.sizeBytes / largestBytes) * 100}%`}></span>
+          </span>
+        </td>
+        <td class="action-column">
+          <div class="history-actions tool-bar">
+            <button
+              class="history-play info iconbutton <big>"
+              type="button"
+              aria-label=${`Play ${title}`}
+              title="Play"
+              ?disabled=${this.busy}
+              @click=${() => this.replay(replay)}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#play-icon"></use></svg>
+            </button>
+            <button
+              class="warn iconbutton <big>"
+              type="button"
+              aria-label=${`Delete downloaded files for ${title}`}
+              title="Delete files"
+              ?disabled=${this.busy}
+              @click=${() => this.deleteEntry({ id: file.id, title }, true)}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#delete-file-icon"></use></svg>
+            </button>
+          </div>
+        </td>
+      </tr>
     `;
   }
 
@@ -1501,13 +1823,15 @@ export class VideoApp extends LitElement {
           >
             Open on YouTube ↗
           </a>
-          <span class="badges" aria-label="Downloaded files">
-            ${
-              mp4Available
-                ? html`<chip class="archive">MP4 · ${fileSize(entry.mp4.sizeBytes)}</chip>`
-                : html`<chip class="plain">No files</chip>`
-            }
-          </span>
+          ${
+            mp4Available
+              ? html`
+                  <span class="badges" aria-label="Downloaded files">
+                    <chip class="archive">MP4 · ${fileSize(entry.mp4.sizeBytes)}</chip>
+                  </span>
+                `
+              : nothing
+          }
         </div>
 
         <div class="history-actions tool-bar">

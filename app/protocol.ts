@@ -81,10 +81,21 @@ export const HistoryEntrySchema = z.object({
 export const HistoryListSchema = z.array(HistoryEntrySchema);
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
+export const StorageFileSchema = z.object({
+  id: z.string().regex(/^[a-zA-Z0-9_-]{11}$/),
+  title: z.string().nullable(),
+  channel: z.string().nullable(),
+  sizeBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  modifiedAt: z.iso.datetime(),
+});
+export const StorageListSchema = z.array(StorageFileSchema);
+export type StorageFile = z.infer<typeof StorageFileSchema>;
+
 export type ApiResponse =
   | ResolvedVideo
   | z.infer<typeof PreparingVideoSchema>
   | PreparationSnapshot
   | HistoryEntry[]
+  | StorageFile[]
   | ApiError
   | OkResponse;

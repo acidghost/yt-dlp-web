@@ -783,6 +783,15 @@ export function startServer({
           DELETE: mutationRoute((request) => downloadStatus(request.params.jobToken, true)),
         },
         "/api/history": { GET: readRoute(history) },
+        "/api/storage": {
+          GET: readRoute(async () => {
+            try {
+              return json(await library.storage());
+            } catch {
+              return jsonError("Could not load storage.");
+            }
+          }),
+        },
         // Param routes inline the params so TypeScript infers each handler's
         // BunRequest<route> and typed params, then dispatch to plain arguments.
         "/api/history/:id/watched": {

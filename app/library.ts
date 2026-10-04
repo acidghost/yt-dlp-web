@@ -1,7 +1,8 @@
 import { Database, type Statement } from "bun:sqlite";
-import { mkdirSync, rmSync } from "node:fs";
+import { type Dirent, mkdirSync, rmSync } from "node:fs";
+import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { HistoryEntry, VideoId } from "./protocol";
+import type { HistoryEntry, StorageFile, VideoId } from "./protocol";
 
 export const validVideoId = (id: string): boolean => /^[a-zA-Z0-9_-]{11}$/.test(id);
 
@@ -180,6 +181,57 @@ export class Library {
 
   progress(id: VideoId, positionSeconds: number): void {
     this.savePosition.run(positionSeconds, id);
+  }
+
+  // Published file lengths/mtimes include unplayed and database-reset downloads.
+  async storage(): Promise<StorageFile[]> {
+    const root = join(this.dataDir, "media");
+    const files: StorageFile[] = [];
+    let entries: Dirent[];
+
+    try {
+      entries = await readdir(root, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return [];
+      }
+      throw error;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !validVideoId(entry.name)) {
+        continue;
+      }
+
+      try {
+        const dir = join(root, entry.name);
+        if (!(await lstat(dir)).isDirectory()) {
+          continue;
+        }
+        const stat = await lstat(join(dir, "video.mp4"));
+        if (!stat.isFile() || stat.size === 0) {
+          continue;
+        }
+
+        const meta = this.metadata(entry.name);
+        files.push({
+          id: entry.name,
+          title: meta?.title ?? null,
+          channel: meta?.channel ?? null,
+          sizeBytes: stat.size,
+          modifiedAt: stat.mtime.toISOString(),
+        });
+      } catch (error) {
+        // Publication/deletion can race this snapshot; other errors must not undercount.
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw error;
+        }
+      }
+    }
+
+    return files.sort((first, second) =>
+      first.id < second.id ? -1 : first.id > second.id ? 1 : 0,
+    );
   }
 
   // MP4 size comes from the published file, never from a DB flag.

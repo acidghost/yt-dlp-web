@@ -42,7 +42,7 @@
 main {
   max-inline-size: none;
   margin: 1.5rem auto 4rem;
-  padding: 0 1.25rem;
+  padding: 0 1.25rem 2rem;
 }
 
 .site-header,
@@ -554,6 +554,157 @@ main {
   min-block-size: 2.75rem;
 }
 
+.library-summary,
+.library-tabs,
+.library-toolbar,
+.library-results {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+}
+
+.library-summary {
+  font-variant-numeric: tabular-nums;
+}
+
+.storage-total strong {
+  color: var(--accent);
+}
+
+.library-summary button,
+.library-tabs button,
+.library-toolbar :is(input, select, button) {
+  min-block-size: 2.75rem;
+}
+
+.library-tabs {
+  flex: 0 0 auto;
+}
+
+.library-tabs button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: transparent;
+}
+
+.library-toolbar {
+  /* missing.css uses this setting to size inputs and selects. */
+  --input-inline-size: 100%;
+  flex-wrap: nowrap;
+  align-items: end;
+  margin-block-start: 1rem;
+}
+
+.library-toolbar label {
+  display: grid;
+  gap: 0.2rem;
+  min-inline-size: 0;
+  padding-block: 0;
+}
+
+.library-search {
+  flex: 1 1 20rem;
+}
+
+.library-sort {
+  flex: 0 0 11rem;
+}
+
+.library-toolbar :is(input, select) {
+  min-inline-size: 0;
+}
+
+#library-query::placeholder {
+  text-align: start;
+}
+
+.storage-note,
+.library-results,
+.storage-table caption {
+  color: var(--muted-fg);
+  font-size: 0.85rem;
+}
+
+.storage-note {
+  margin-block: 0.5rem;
+}
+
+.library-results {
+  justify-content: space-between;
+  margin-block: 1rem 0.5rem;
+}
+
+.storage-table {
+  display: table;
+  table-layout: fixed;
+  inline-size: 100%;
+  margin-block: 0;
+}
+
+.storage-table caption {
+  text-align: start;
+  padding-block-end: 0.5rem;
+}
+
+.storage-table :is(th, td) {
+  padding: 0.75rem 0.5rem;
+  border-block-end: 1px solid var(--graphical-fg);
+  vertical-align: middle;
+}
+
+.storage-table th {
+  color: var(--muted-fg);
+  font-weight: 400;
+}
+
+.storage-details {
+  overflow-wrap: anywhere;
+}
+
+.storage-details strong {
+  display: block;
+  line-height: 1.35;
+}
+
+.storage-table .size-column {
+  inline-size: 6rem;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9rem;
+}
+
+.storage-table .action-column {
+  inline-size: 7rem;
+}
+
+.storage-table .history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 0.35rem;
+}
+
+.storage-table .history-actions button {
+  inline-size: 2.75rem;
+  padding: 0.5rem;
+}
+
+.size-track,
+.size-fill {
+  display: block;
+  block-size: 4px;
+}
+
+.size-track {
+  background: var(--graphical-fg);
+  margin-block-start: 0.5rem;
+}
+
+.size-fill {
+  background: var(--accent);
+}
+
 .back-to-player {
   position: fixed;
   z-index: 5;
@@ -570,10 +721,30 @@ main {
   outline-offset: 3px;
 }
 
+@media (max-width: 32rem) {
+  .storage-table .action-column {
+    inline-size: 3.75rem;
+  }
+
+  .storage-table .history-actions {
+    flex-direction: column;
+    align-items: end;
+  }
+}
+
 @media (max-width: 48rem) {
   main {
     margin-top: 1rem;
     padding-inline: 0.75rem;
+  }
+
+  .library-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .library-toolbar label {
+    flex: none;
   }
 
   .history-item {

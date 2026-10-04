@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "playwright/test";
-import { HistoryListSchema } from "../app/protocol";
+import { HistoryListSchema, StorageListSchema } from "../app/protocol";
 
 // Full application journeys. No API interception or invented tokens/history:
 // only the host's external media/CDN collaborators are controlled.
@@ -40,6 +40,27 @@ test("native preparation, user playback and saved watch/progress survive page re
     true,
   );
   expect((await rows(page)).find((row) => row.id === id)).toBeUndefined();
+  const storage = StorageListSchema.parse(await (await page.request.get("/api/storage")).json());
+  expect(storage.find((file) => file.id === id)).toMatchObject({
+    title: "Local fixture video",
+    channel: "Local fixture channel",
+  });
+  expect(storage.find((file) => file.id === id)?.sizeBytes).toBeGreaterThan(0);
+
+  await page.getByRole("button", { name: "Saved MP4s", exact: true }).click();
+  const savedFile = page.locator(`.saved-file-item[data-id="${id}"]`);
+  await expect(savedFile).toContainText("Not in watch history");
+  await expect(savedFile).toContainText("Modified");
+  const preparing = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/resolve",
+  );
+  await savedFile.getByRole("button", { name: "Play Local fixture video", exact: true }).click();
+  expect((await preparing).ok()).toBe(true);
+  await expect(page.locator("#status")).toHaveAttribute("data-phase", "ready");
+  expect(await page.locator("video").evaluate((video: HTMLVideoElement) => video.paused)).toBe(
+    true,
+  );
+  expect((await rows(page)).find((row) => row.id === id)).toBeUndefined();
 
   await play(page);
   await page.locator("media-play-button").focus();
@@ -71,6 +92,27 @@ test("native preparation, user playback and saved watch/progress survive page re
   expect(await page.locator("video").evaluate((video: HTMLVideoElement) => video.paused)).toBe(
     true,
   );
+
+  await page.getByRole("button", { name: "Saved MP4s", exact: true }).click();
+  const confirmation = page.waitForEvent("dialog");
+  const deleting = page
+    .locator(`.saved-file-item[data-id="${id}"]`)
+    .getByRole("button", { name: "Delete downloaded files for Local fixture video", exact: true })
+    .click();
+  await (await confirmation).accept();
+  await deleting;
+  await expect(page.locator("#status")).toHaveText("Downloaded files deleted.");
+  await expect(page.locator(`.saved-file-item[data-id="${id}"]`)).toHaveCount(0);
+  expect(
+    StorageListSchema.parse(await (await page.request.get("/api/storage")).json()).find(
+      (file) => file.id === id,
+    ),
+  ).toBeUndefined();
+  expect((await rows(page)).find((row) => row.id === id)).toMatchObject({
+    title: "Local fixture video",
+    mp4: { sizeBytes: null },
+  });
+  await expect(page.locator("#history-title")).toBeFocused();
 });
 
 test("default proxy mode plays real rewritten local HLS with separate audio through the application", async ({
