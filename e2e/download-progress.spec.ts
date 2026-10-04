@@ -47,6 +47,19 @@ async function prepare(page: Page, handler: (route: Route) => Promise<void>, tim
   await page.goto(`/?url=${encodeURIComponent(url)}&mode=mp4${timestamp}`);
 }
 
+test("Ctrl+K leaves focus on the current control while the URL input is disabled", async ({
+  page,
+}) => {
+  await prepare(page, (route) => route.fulfill({ json: active() }));
+  await expect(page.getByLabel("YouTube video URL")).toBeDisabled();
+
+  const cancel = page.getByRole("button", { name: "Cancel download" });
+  await cancel.focus();
+  await page.keyboard.press("Control+k");
+
+  await expect(cancel).toBeFocused();
+});
+
 test("player-centered progress labels current transfers and preserves the player through ready", async ({
   page,
 }) => {

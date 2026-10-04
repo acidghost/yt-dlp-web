@@ -273,6 +273,41 @@ test("the integrated speed menu tracks video state and owns its keyboard actions
   );
 });
 
+test("Ctrl+K focuses the URL input before preparing a video, including from another input", async ({
+  page,
+}) => {
+  await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
+  await page.goto("/");
+
+  const urlInput = page.getByLabel("YouTube video URL");
+  await urlInput.fill(url);
+  await page.getByRole("button", { name: "Fill page" }).focus();
+  await page.keyboard.press("Control+k");
+
+  await expect(urlInput).toBeFocused();
+  await expect(urlInput).toHaveValue(url);
+
+  const search = page.getByLabel("Search title or channel");
+  await search.fill("fixture");
+  await page.keyboard.press("Control+k");
+
+  await expect(urlInput).toBeFocused();
+  await expect(search).toHaveValue("fixture");
+});
+
+for (const shortcut of ["Control+Shift+k", "Control+Alt+k", "Control+Meta+k"]) {
+  test(`${shortcut} does not focus the URL input`, async ({ page }) => {
+    await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
+    await page.goto("/");
+
+    const button = page.getByRole("button", { name: "Fill page" });
+    await button.focus();
+    await page.keyboard.press(shortcut);
+
+    await expect(button).toBeFocused();
+  });
+}
+
 test("keyboard shortcuts control a prepared player without hijacking form controls", async ({
   page,
 }) => {
@@ -334,6 +369,20 @@ test("keyboard shortcuts control a prepared player without hijacking form contro
 
   expect((await state()).paused).toBe(false);
 
+  await page.keyboard.press("Control+k");
+
+  await expect(page.getByLabel("YouTube video URL")).toBeFocused();
+  expect((await state()).paused).toBe(false);
+
+  const volume = page.locator("media-volume-range input");
+  await volume.focus();
+  await expect(volume).toBeFocused();
+  await page.keyboard.press("Control+k");
+
+  await expect(page.getByLabel("YouTube video URL")).toBeFocused();
+  expect((await state()).paused).toBe(false);
+
+  await player.focus();
   await page.keyboard.press("KeyK");
 
   expect((await state()).paused).toBe(true);

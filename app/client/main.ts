@@ -178,7 +178,7 @@ export class VideoApp extends LitElement {
     window.addEventListener("pagehide", this.cancelOnExit);
     window.addEventListener("pageshow", this.resumePreparation);
     document.addEventListener("visibilitychange", this.saveOnHide);
-    document.addEventListener("keydown", this.handlePlayerKey);
+    document.addEventListener("keydown", this.handleKey);
     void this.refreshLibrary();
     if (this.jobToken) {
       void this.pollPreparation(this.preparationGeneration, this.jobToken);
@@ -1108,8 +1108,27 @@ export class VideoApp extends LitElement {
     }
   }
 
-  private readonly handlePlayerKey = (event: KeyboardEvent): void => {
-    if (!this.source || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) {
+  private readonly handleKey = (event: KeyboardEvent): void => {
+    if (event.defaultPrevented || event.isComposing) {
+      return;
+    }
+
+    if (
+      event.ctrlKey &&
+      !event.altKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      event.key.toLowerCase() === "k"
+    ) {
+      const input = this.querySelector<HTMLInputElement>("#url");
+      if (input && !input.disabled) {
+        event.preventDefault();
+        input.focus();
+      }
+      return;
+    }
+
+    if (!this.source || event.altKey || event.ctrlKey || event.metaKey) {
       return;
     }
     // event.target is retargeted at shadow boundaries. Let buttons, ranges and
@@ -1192,7 +1211,7 @@ export class VideoApp extends LitElement {
     window.removeEventListener("pagehide", this.cancelOnExit);
     window.removeEventListener("pageshow", this.resumePreparation);
     document.removeEventListener("visibilitychange", this.saveOnHide);
-    document.removeEventListener("keydown", this.handlePlayerKey);
+    document.removeEventListener("keydown", this.handleKey);
     this.hls?.destroy();
     this.hls = null;
     super.disconnectedCallback();
@@ -1244,6 +1263,7 @@ export class VideoApp extends LitElement {
               type="url"
               placeholder="https://www.youtube.com/watch?v=…"
               autocomplete="url"
+              aria-keyshortcuts="Control+k"
               required
               .value=${this.url}
               @input=${this.changeUrl}
@@ -1379,7 +1399,8 @@ export class VideoApp extends LitElement {
         </media-controller>
 
         <p class="hint player-shortcuts">
-          Keyboard: <kbd>Space</kbd>/<kbd>K</kbd> play/pause · <kbd>←</kbd>/<kbd>→</kbd> seek 5s
+          Keyboard: <kbd>Ctrl+K</kbd> focus URL · <kbd>Space</kbd>/<kbd>K</kbd> play/pause
+          · <kbd>←</kbd>/<kbd>→</kbd> seek 5s
           · <kbd>J</kbd>/<kbd>L</kbd> seek 10s · <kbd>&lt;</kbd>/<kbd>&gt;</kbd> speed · <kbd>M</kbd> mute
           · <kbd>F</kbd> fullscreen
         </p>

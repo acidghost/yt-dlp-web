@@ -103,6 +103,7 @@ The integrated controls provide play/pause, seeking, mute/volume, playback speed
 
 | Key           | Action                             |
 | ------------- | ---------------------------------- |
+| `Ctrl+K`      | Focus the YouTube URL input        |
 | `Space` / `K` | Play or pause                      |
 | `←` / `→`     | Seek backward / forward 5 seconds  |
 | `J` / `L`     | Seek backward / forward 10 seconds |
@@ -110,7 +111,9 @@ The integrated controls provide play/pause, seeking, mute/volume, playback speed
 | `F`           | Toggle fullscreen                  |
 | `M`           | Toggle mute                        |
 
-Focused form fields and controls handle their own keys. `↑` / `↓` scroll the
+`Ctrl+K` works globally, including from focused inputs and player controls,
+unless the URL input is disabled while the app is busy. Other shortcuts leave
+focused form fields and controls to handle their own keys. `↑` / `↓` scroll the
 page outside focused sliders and menus.
 
 - **Fill page** expands the player width without entering fullscreen.
