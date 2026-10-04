@@ -103,67 +103,77 @@ test("player-centered progress labels current transfers and preserves the player
   ).toBe(true);
 });
 
-test("unknown totals are indeterminate and mobile/fullscreen Cancel stays clear of controls", async ({
-  page,
-}) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  const snapshot: PreparationSnapshot = {
-    ...active(),
-    totalBytes: null,
-    totalEstimated: false,
-    speedBytesPerSecond: null,
-  };
-  await prepare(page, (route) =>
-    route.fulfill({
-      json:
-        route.request().method() === "DELETE"
-          ? { state: "canceled" }
-          : snapshot,
-    }),
-  );
-  const panel = page.locator(".download-progress");
-  await expect(panel).toContainText("156.0 MiB downloaded");
-  await expect(panel).toContainText("Calculating speed");
-  await expect(panel.locator("progress")).not.toHaveAttribute("value");
-  await expect(panel).not.toContainText("%");
-  await expect(panel).toContainText("every tab");
-  const action = page.getByRole("button", { name: "Cancel download" });
-  await expect(action).toBeVisible();
-  const assertFits = async () => {
-    const box = await panel.boundingBox();
-    const controls = await page.locator(".player-actions").boundingBox();
-    const target = await action.boundingBox();
-    expect(box && controls && target).toBeTruthy();
-    if (!box || !controls || !target)
-      throw new Error("Missing preparation geometry");
-    expect(box.y + box.height).toBeLessThanOrEqual(controls.y + 1);
-    expect(target.height).toBeGreaterThanOrEqual(44);
-    expect(box.x).toBeGreaterThanOrEqual(0);
-    expect(box.x + box.width).toBeLessThanOrEqual(
-      await page.evaluate(() => innerWidth),
+for (const viewport of [
+  { width: 390, height: 844 },
+  { width: 320, height: 568 },
+  { width: 844, height: 390 },
+]) {
+  test(`unknown totals are indeterminate and Cancel stays clear of controls at ${viewport.width}x${viewport.height} and fullscreen`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    const snapshot: PreparationSnapshot = {
+      ...active(),
+      totalBytes: null,
+      totalEstimated: false,
+      speedBytesPerSecond: null,
+    };
+    await prepare(page, (route) =>
+      route.fulfill({
+        json:
+          route.request().method() === "DELETE"
+            ? { state: "canceled" }
+            : snapshot,
+      }),
     );
-  };
-  await assertFits();
-  if (await page.evaluate(() => document.fullscreenEnabled)) {
-    await page.locator("media-fullscreen-button").click();
-    await expect
-      .poll(() => page.evaluate(() => document.fullscreenElement?.localName))
-      .toBe("media-controller");
+    const panel = page.locator(".download-progress");
+    await expect(panel).toContainText("156.0 MiB downloaded");
+    await expect(panel).toContainText("Calculating speed");
+    await expect(panel.locator("progress")).not.toHaveAttribute("value");
+    await expect(panel).not.toContainText("%");
+    await expect(panel).toContainText("every tab");
+    const action = page.getByRole("button", { name: "Cancel download" });
     await expect(action).toBeVisible();
+    const assertFits = async () => {
+      const box = await panel.boundingBox();
+      const controls = await page.locator(".player-actions").boundingBox();
+      const target = await action.boundingBox();
+      expect(box && controls && target).toBeTruthy();
+      if (!box || !controls || !target)
+        throw new Error("Missing preparation geometry");
+      expect(box.y + box.height).toBeLessThanOrEqual(controls.y + 1);
+      expect(target.height).toBeGreaterThanOrEqual(44);
+      expect(target.y).toBeGreaterThanOrEqual(box.y);
+      expect(target.y + target.height).toBeLessThanOrEqual(box.y + box.height);
+      expect(target.x).toBeGreaterThanOrEqual(box.x);
+      expect(target.x + target.width).toBeLessThanOrEqual(box.x + box.width);
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(
+        await page.evaluate(() => innerWidth),
+      );
+    };
     await assertFits();
-    await action.click();
-    await expect(page.locator("#status")).toHaveAttribute(
-      "data-phase",
-      "canceled",
-    );
-    await expect
-      .poll(() => page.evaluate(() => document.fullscreenElement))
-      .toBeNull();
-    await expect(
-      page.getByRole("button", { name: "Prepare video" }),
-    ).toBeFocused();
-  }
-});
+    if (await page.evaluate(() => document.fullscreenEnabled)) {
+      await page.locator("media-fullscreen-button").click();
+      await expect
+        .poll(() => page.evaluate(() => document.fullscreenElement?.localName))
+        .toBe("media-controller");
+      await expect(action).toBeVisible();
+      await assertFits();
+      await action.click();
+      await expect(page.locator("#status")).toHaveAttribute(
+        "data-phase",
+        "canceled",
+      );
+      await expect
+        .poll(() => page.evaluate(() => document.fullscreenElement))
+        .toBeNull();
+      await expect(
+        page.getByRole("button", { name: "Prepare video" }),
+      ).toBeFocused();
+    }
+  });
+}
 
 test("global cancellation waits for cleanup and restores keyboard focus", async ({
   page,
