@@ -220,7 +220,7 @@ test("download history checks files, validates watch token and ID, and preserves
   await using fixture = await appFixture();
   const base = fixture.start();
   const resolved = await resolve(base);
-  const mediaDir = join(fixture.dataDir, "media", resolved.id);
+  const mediaDir = join(fixture.dataDir, "media", resolved.id, "q-720");
 
   expect(await history(base)).toEqual([]);
   expect((await watched(base, "invalid/../", resolved.token)).status).toBe(404);

@@ -57,7 +57,7 @@ test("rejects bad ranges, missing files, large requests and cross-site origins",
     expect(response.headers.get("content-range")).toBe("bytes */10");
   }
 
-  expect((await fetch(`${base}/api/stream/unknown`)).status).toBe(404);
+  expect((await fetch(`${base}/api/stream/unknown/720`)).status).toBe(404);
   expect((await requestResolve(base, "x".repeat(3000))).status).toBe(400);
   expect((await requestResolve(base, url, { Origin: "https://evil.example" })).status).toBe(403);
   expect((await fetch(`${base}/app/server.ts`)).status).toBe(404);
@@ -66,7 +66,7 @@ test("rejects bad ranges, missing files, large requests and cross-site origins",
 
   expect(page).toContain("<video-app");
 
-  await rm(join(fixture.dataDir, "media", data.id, "video.mp4"));
+  await rm(join(fixture.dataDir, "media", data.id, "q-720", "video.mp4"));
 
   expect((await fetch(media)).status).toBe(404);
 });
@@ -202,6 +202,9 @@ test("no-Origin browser attempts and cross-site fetch metadata on mutations are 
   expect((await post({ "Sec-Fetch-Site": "same-origin" })).status).toBe(202);
 
   const resolved = await complete(base, await post({}));
+  if (resolved.kind !== "download") {
+    throw new Error("Expected MP4 preparation");
+  }
 
   expect((await watched(base, resolved.id, resolved.token)).status).toBe(200);
   expect(
@@ -220,7 +223,7 @@ test("no-Origin browser attempts and cross-site fetch metadata on mutations are 
   ).toBe(200);
   expect(
     (
-      await fetch(`${base}/api/stream/${resolved.id}`, {
+      await fetch(`${base}${resolved.stream}`, {
         headers: { Host: "evil.example:3000" },
       })
     ).status,
@@ -347,7 +350,7 @@ test.each(["buffered", "chunked"] as const)(
     expect(download).not.toHaveBeenCalled();
     expect(await history(base)).toEqual([]);
     expect(
-      await Bun.file(join(fixture.dataDir, "media", "abcdefghijk", "video.mp4")).exists(),
+      await Bun.file(join(fixture.dataDir, "media", "abcdefghijk", "q-720", "video.mp4")).exists(),
     ).toBe(false);
   },
 );

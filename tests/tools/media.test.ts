@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DownloadTerminationError, downloadVideo } from "../../app/media";
 import { startOwnedProcess } from "../../app/owned-process";
-import type { TransferProgress } from "../../app/protocol";
+import type { Quality, TransferProgress } from "../../app/protocol";
 
 // Capture the actual function value BEFORE overriding its live module export.
 const launchReal = startOwnedProcess;
@@ -81,8 +81,8 @@ async function localInput(dir: string, repeat: number) {
           protocol: "http",
           vcodec: "avc1.4d401e",
           acodec: "none",
-          height: 360,
-          width: 640,
+          height: 90,
+          width: 160,
         },
         {
           format_id: "audio",
@@ -114,11 +114,17 @@ async function mediaFixture(repeat: number) {
 
   return {
     path,
-    async download(onProgress: (value: TransferProgress) => void, controller: AbortController) {
+    async download(
+      onProgress: (value: TransferProgress) => void,
+      controller: AbortController,
+      quality: Quality = "720",
+      output = path,
+    ) {
       const timer = setTimeout(() => controller.abort(), 20_000);
 
       try {
-        return await downloadVideo(url, path, {
+        return await downloadVideo(url, output, {
+          quality,
           signal: controller.signal,
           onProgress,
         });
@@ -148,7 +154,7 @@ test("real yt-dlp/ffmpeg templates report video/audio/Merger and return usable H
   const progress: TransferProgress[] = [];
   const video = await fixture.download((value) => progress.push(value), new AbortController());
 
-  expect(video).toMatchObject({ title: "Local media fixture", duration: 12 });
+  expect(video).toMatchObject({ title: "Local media fixture", duration: 12, height: 90 });
   expect(Bun.file(path).size).toBeGreaterThan(0);
 
   const phases = new Set(progress.map((value) => value.phase));
@@ -190,3 +196,70 @@ test("real downloader cancellation confirms owned process termination after obse
   await expect(result).rejects.toMatchObject({ name: "AbortError" });
   expect(observedTransfer).toBe(true);
 }, 30_000);
+
+test("real tools select the highest H.264 source below each cap and report the decoded height", async () => {
+  await using fixture = await mediaFixture(0);
+  const dir = dirname(fixture.path);
+  const infoPath = join(dir, "input.json");
+  const info = await Bun.file(infoPath).json();
+
+  for (const height of [360, 720]) {
+    const path = join(dir, `video-${height}.mp4`);
+    const encode = Bun.spawnSync([
+      "ffmpeg",
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-i",
+      join(dir, "video.mp4"),
+      "-an",
+      "-vf",
+      `scale=-2:${height}`,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-threads",
+      "1",
+      path,
+    ]);
+    expect(encode.exitCode).toBe(0);
+    expect(encode.stderr.toString()).toBe("");
+    info.formats.push({
+      format_id: `video-${height}`,
+      url: pathToFileURL(path).href,
+      ext: "mp4",
+      protocol: "http",
+      vcodec: "avc1.4d401e",
+      acodec: "none",
+      height,
+      width: (height * 16) / 9,
+    });
+  }
+  await writeFile(infoPath, JSON.stringify(info));
+
+  for (const quality of ["360", "720"] as const) {
+    const output = join(dir, `result-${quality}.mp4`);
+    const video = await fixture.download(() => {}, new AbortController(), quality, output);
+    expect(video.height).toBe(Number(quality));
+    const probe = Bun.spawnSync([
+      "ffprobe",
+      "-v",
+      "error",
+      "-show_entries",
+      "stream=codec_name,height",
+      "-of",
+      "json",
+      output,
+    ]);
+    expect(probe.exitCode).toBe(0);
+    const streams = JSON.parse(probe.stdout.toString()).streams;
+    expect(
+      streams.find((stream: { codec_name: string }) => stream.codec_name === "h264")?.height,
+    ).toBe(Number(quality));
+    expect(streams.map((stream: { codec_name: string }) => stream.codec_name).sort()).toEqual([
+      "aac",
+      "h264",
+    ]);
+  }
+});

@@ -1,7 +1,15 @@
+import { type Quality, QualitySchema, type SavedVariant, SavedVariantSchema } from "../protocol";
+
 export type PlayerMode = "proxy" | "mp4";
 
 export type Handoff =
-  | { url: string; mode: PlayerMode; startSeconds?: number }
+  | {
+      url: string;
+      mode: PlayerMode;
+      startSeconds?: number;
+      quality?: Quality;
+      savedVariant?: SavedVariant;
+    }
   | { error: string }
   | null;
 
@@ -45,7 +53,11 @@ export function videoStartSeconds(value: string): number | undefined {
 export function parseHandoff(search: string): Handoff {
   const params = new URLSearchParams(search);
   if (!params.has("url")) {
-    return params.has("mode") || params.has("t") || params.has("start")
+    return params.has("mode") ||
+      params.has("quality") ||
+      params.has("savedVariant") ||
+      params.has("t") ||
+      params.has("start")
       ? { error: "Add a video URL to the link." }
       : null;
   }
@@ -53,6 +65,22 @@ export function parseHandoff(search: string): Handoff {
   const mode = params.get("mode") ?? "proxy";
   if (mode !== "proxy" && mode !== "mp4") {
     return { error: "Unknown playback mode." };
+  }
+
+  const quality = params.has("quality") ? QualitySchema.safeParse(params.get("quality")) : null;
+  if (quality && !quality.success) {
+    return { error: "Unknown video quality." };
+  }
+  const savedVariant = params.has("savedVariant")
+    ? SavedVariantSchema.safeParse(params.get("savedVariant"))
+    : null;
+  if (
+    savedVariant &&
+    (!savedVariant.success ||
+      mode !== "mp4" ||
+      (quality?.success && quality.data !== savedVariant.data))
+  ) {
+    return { error: "Invalid saved MP4 selection." };
   }
 
   const url = params.get("url") ?? "";
@@ -74,12 +102,25 @@ export function parseHandoff(search: string): Handoff {
   return {
     url,
     mode,
+    ...(quality?.success ? { quality: quality.data } : {}),
+    ...(savedVariant?.success ? { savedVariant: savedVariant.data } : {}),
     ...(startSeconds === undefined ? {} : { startSeconds }),
   };
 }
 
-export function handoffSearch(url: string, mode: PlayerMode, startSeconds?: number): string {
+export function handoffSearch(
+  url: string,
+  mode: PlayerMode,
+  startSeconds?: number,
+  options: { quality?: Quality; savedVariant?: SavedVariant } = {},
+): string {
   const params = new URLSearchParams({ url, mode });
+  if (options.quality !== undefined) {
+    params.set("quality", options.quality);
+  }
+  if (options.savedVariant !== undefined) {
+    params.set("savedVariant", options.savedVariant);
+  }
   if (startSeconds !== undefined) {
     params.set("t", String(startSeconds));
   }

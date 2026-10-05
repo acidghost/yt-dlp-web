@@ -148,3 +148,43 @@ test("redirect chains stop after the permitted three hops", async () => {
     "https://manifest.googlevideo.com/hop-3.m3u8",
   ]);
 });
+
+test("a cap leaving no playable rendition URI fails before publishing a session", async () => {
+  const proxy = new ProxySession(
+    source,
+    async () =>
+      new Response(
+        [
+          "#EXTM3U",
+          '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aac",URI="https://rr1.googlevideo.com/audio.m3u8"',
+          '#EXT-X-STREAM-INF:RESOLUTION=1280x720,CODECS="avc1.4d401e,mp4a.40.2",AUDIO="aac"',
+          "https://rr1.googlevideo.com/high.m3u8",
+          '#EXT-X-STREAM-INF:RESOLUTION=640x360,CODECS="avc1.4d401e,mp4a.40.2",AUDIO="aac"',
+        ].join("\n"),
+      ),
+    0,
+    "360",
+  );
+  await expect(proxy.prepare("token")).rejects.toThrow("No playable HLS renditions");
+});
+
+test("Best ignores unsafe resolution numbers rather than emitting invalid quality metadata", async () => {
+  const proxy = new ProxySession(
+    source,
+    async () =>
+      new Response(
+        [
+          "#EXTM3U",
+          '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aac",URI="https://rr1.googlevideo.com/audio.m3u8"',
+          '#EXT-X-STREAM-INF:RESOLUTION=640x360,CODECS="avc1.4d401e,mp4a.40.2",AUDIO="aac"',
+          "https://rr1.googlevideo.com/low.m3u8",
+          '#EXT-X-STREAM-INF:RESOLUTION=640x99999999999999999999999999999,CODECS="avc1.4d401e,mp4a.40.2",AUDIO="aac"',
+          "https://rr1.googlevideo.com/invalid.m3u8",
+        ].join("\n"),
+      ),
+    0,
+    "best",
+  );
+  await proxy.prepare("token");
+  expect(proxy.availableHeights).toEqual([360]);
+});

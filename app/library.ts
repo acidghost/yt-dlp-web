@@ -2,7 +2,14 @@ import { Database, type Statement } from "bun:sqlite";
 import { type Dirent, mkdirSync, rmSync } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { HistoryEntry, StorageFile, VideoId } from "./protocol";
+import {
+  type HistoryEntry,
+  type SavedFile,
+  SavedVariantSchema,
+  type StorageFile,
+  type VideoId,
+} from "./protocol";
+import { readSavedFile } from "./saved-media";
 
 export const validVideoId = (id: string): boolean => /^[a-zA-Z0-9_-]{11}$/.test(id);
 
@@ -203,29 +210,14 @@ export class Library {
         continue;
       }
 
-      try {
-        const dir = join(root, entry.name);
-        if (!(await lstat(dir)).isDirectory()) {
-          continue;
-        }
-        const stat = await lstat(join(dir, "video.mp4"));
-        if (!stat.isFile() || stat.size === 0) {
-          continue;
-        }
-
-        const meta = this.metadata(entry.name);
+      const meta = this.metadata(entry.name);
+      for (const file of await this.files(entry.name)) {
         files.push({
           id: entry.name,
           title: meta?.title ?? null,
           channel: meta?.channel ?? null,
-          sizeBytes: stat.size,
-          modifiedAt: stat.mtime.toISOString(),
+          ...file,
         });
-      } catch (error) {
-        // Publication/deletion can race this snapshot; other errors must not undercount.
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          throw error;
-        }
       }
     }
 
@@ -234,13 +226,37 @@ export class Library {
     );
   }
 
-  // MP4 size comes from the published file, never from a DB flag.
+  private async files(id: VideoId) {
+    const files: (SavedFile & { modifiedAt: string })[] = [];
+    if (!validVideoId(id)) {
+      return files;
+    }
+    try {
+      if (!(await lstat(join(this.dataDir, "media", id))).isDirectory()) {
+        return files;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return files;
+      }
+      throw error;
+    }
+    for (const variant of SavedVariantSchema.options) {
+      const file = await readSavedFile(join(this.dataDir, "media"), id, variant);
+      if (file) {
+        files.push(file);
+      }
+    }
+    return files;
+  }
+
+  // MP4 size comes from the published files, never from a DB flag.
   async list(): Promise<HistoryEntry[]> {
     return Promise.all(
       this.listRows.all().map(async (row) => {
-        const dir = join(this.dataDir, "media", row.id);
-        const mp4 = Bun.file(join(dir, "video.mp4"));
-        const mp4Bytes = (await mp4.exists()) && mp4.size > 0 ? mp4.size : null;
+        const files = await this.files(row.id);
+        const variants = files.map(({ modifiedAt: _modifiedAt, ...file }) => file);
+        const mp4Bytes = files.length ? files.reduce((sum, file) => sum + file.sizeBytes, 0) : null;
 
         return {
           id: row.id,
@@ -250,7 +266,7 @@ export class Library {
           duration: row.duration,
           lastWatchedAt: row.last_watched_at,
           positionSeconds: row.position_seconds,
-          mp4: { sizeBytes: mp4Bytes },
+          mp4: { sizeBytes: mp4Bytes, variants },
         } satisfies HistoryEntry;
       }),
     );

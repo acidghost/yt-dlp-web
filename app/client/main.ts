@@ -12,13 +12,18 @@ import {
   type PreparationSnapshot,
   PreparationSnapshotSchema,
   type ProgressRequest,
+  type Quality,
+  QualitySchema,
   type ResolvedVideo,
   type ResolveRequest,
   ResolveResponseSchema,
+  type SavedFile,
+  type SavedVariant,
   type StorageFile,
   StorageListSchema,
   type WatchRequest,
 } from "../protocol";
+import { qualityLabel } from "../quality";
 import {
   handoffSearch,
   type PlayerMode,
@@ -30,6 +35,8 @@ import {
   type FilesSort,
   type HistorySort,
   historyView,
+  preferredSavedFile,
+  savedQualityLabel,
   savedTitle,
   storageView,
 } from "./library-view";
@@ -49,6 +56,7 @@ const downloadPhases = {
 };
 
 type Notice = { phase: Phase; text: string };
+type PlaybackSettings = { playbackRate: number; volume: number; muted: boolean };
 
 const HISTORY_CHUNK_SIZE = 12;
 
@@ -89,7 +97,15 @@ export class VideoApp extends LitElement {
   }
 
   @state() private mode: PlayerMode = "proxy";
+  @state() private quality: Quality = "720";
+  @state() private currentHeight: number | null = null;
   @state() private url = "";
+  private savedVariant: SavedVariant | undefined;
+  private preparationHeading = "Preparing MP4";
+  private preparationUrl = "";
+  private sourceInputUrl = "";
+  private replacementPlayback: (PlaybackSettings & { id: string; seconds: number }) | null = null;
+  private pendingSettings: PlaybackSettings | null = null;
 
   @state() private notice: Notice = {
     phase: "idle",
@@ -157,6 +173,14 @@ export class VideoApp extends LitElement {
   }
 
   private attachReady(): void {
+    this.sourceInputUrl = this.preparationUrl;
+    const previous = this.replacementPlayback;
+    this.replacementPlayback = null;
+    if (previous && previous.id === this.source?.id) {
+      this.startSeconds = previous.seconds;
+      this.pendingSettings = previous;
+      this.updateAddress();
+    }
     this.pendingResumeSeconds =
       this.startSeconds ?? (this.source ? resumePosition(this.source) : 0);
     if (this.attachSource()) {
@@ -186,6 +210,14 @@ export class VideoApp extends LitElement {
   }
 
   override firstUpdated(): void {
+    try {
+      const saved = QualitySchema.safeParse(localStorage.getItem("video-quality"));
+      if (saved.success) {
+        this.quality = saved.data;
+      }
+    } catch {
+      // Restricted storage must not prevent preparation or playback.
+    }
     const handoff = parseHandoff(window.location.search);
     if (!handoff) {
       return;
@@ -199,6 +231,8 @@ export class VideoApp extends LitElement {
 
     this.url = handoff.url;
     this.mode = handoff.mode;
+    this.quality = handoff.quality ?? this.quality;
+    this.savedVariant = handoff.savedVariant;
     this.startSeconds = handoff.startSeconds;
     // Prepare the selected source, but never start browser playback automatically.
     void this.prepare(false);
@@ -294,6 +328,8 @@ export class VideoApp extends LitElement {
     this.watchedThisPlay = false;
     this.watchRecorded = false;
     this.pendingResumeSeconds = null;
+    this.pendingSettings = null;
+    this.currentHeight = null;
     this.resetCopyFeedback();
     this.lastProgressAt = 0;
     this.lastProgressSeconds = -1;
@@ -318,6 +354,12 @@ export class VideoApp extends LitElement {
           this.fail(`HLS playback failed: ${data.details}`);
         }
       });
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
+        if (this.hls === hls) {
+          const height = hls.levels[data.level]?.height;
+          this.currentHeight = typeof height === "number" && height > 0 ? height : null;
+        }
+      });
       hls.loadSource(source.hls);
       hls.attachMedia(this.player);
 
@@ -329,14 +371,21 @@ export class VideoApp extends LitElement {
       return true;
     }
 
-    this.fail("This browser cannot play HLS. Try Download + Native MP4.");
+    this.fail("This browser cannot play HLS. Choose Save MP4.");
 
     return false;
   }
 
   private updateAddress(): void {
     const url = this.url.trim();
-    const search = url ? `?${handoffSearch(url, this.mode, this.startSeconds)}` : "";
+    const search = url
+      ? `?${handoffSearch(
+          url,
+          this.mode,
+          this.startSeconds === undefined ? undefined : Math.floor(this.startSeconds),
+          this.savedVariant ? { savedVariant: this.savedVariant } : { quality: this.quality },
+        )}`
+      : "";
 
     window.history.replaceState(
       null,
@@ -347,16 +396,36 @@ export class VideoApp extends LitElement {
 
   private submit(event: SubmitEvent): void {
     event.preventDefault();
+    this.savedVariant = undefined;
     void this.prepare();
+  }
+
+  private changeQuality(event: Event): void {
+    if (this.busy) {
+      return;
+    }
+    const value = QualitySchema.safeParse((event.currentTarget as HTMLSelectElement).value);
+    if (!value.success) {
+      return;
+    }
+    this.quality = value.data;
+    this.savedVariant = undefined;
+    try {
+      localStorage.setItem("video-quality", value.data);
+    } catch {
+      // Keep the page-local choice if persistence is unavailable.
+    }
   }
 
   private changeUrl(event: Event): void {
     this.url = (event.currentTarget as HTMLInputElement).value;
+    this.savedVariant = undefined;
     this.startSeconds = videoStartSeconds(this.url.trim());
   }
 
   private async clearUrl(): Promise<void> {
     this.url = "";
+    this.savedVariant = undefined;
     this.startSeconds = undefined;
     await this.updateComplete;
     this.querySelector<HTMLInputElement>("#url")?.focus();
@@ -386,6 +455,9 @@ export class VideoApp extends LitElement {
       source.url,
       source.kind === "download" ? "mp4" : "proxy",
       Math.floor(seconds),
+      source.quality.requested === null && source.kind === "download"
+        ? { savedVariant: source.variant }
+        : { quality: source.quality.requested ?? "720" },
     );
     this.resetCopyFeedback();
 
@@ -440,6 +512,26 @@ export class VideoApp extends LitElement {
     this.cancelPending = false;
     this.cancelError = "";
     this.pollFailures = 0;
+    const previous = this.source;
+    const seconds = this.pendingResumeSeconds ?? this.player.currentTime;
+    this.replacementPlayback =
+      previous &&
+      url === this.sourceInputUrl &&
+      Number.isFinite(seconds) &&
+      this.savedVariant === undefined
+        ? {
+            id: previous.id,
+            seconds,
+            playbackRate: this.player.playbackRate,
+            volume: this.player.volume,
+            muted: this.player.muted,
+          }
+        : null;
+    this.preparationHeading =
+      this.savedVariant !== undefined
+        ? "Opening saved MP4"
+        : `Preparing MP4 · ${qualityLabel(this.quality)}`;
+    this.preparationUrl = url;
     this.saveProgress(true);
     this.source = null;
     this.resetPlayer();
@@ -461,6 +553,9 @@ export class VideoApp extends LitElement {
       const request: ResolveRequest = {
         url,
         mode: this.mode,
+        ...(this.savedVariant === undefined
+          ? { quality: this.quality }
+          : { savedVariant: this.savedVariant }),
       };
       const response = await fetch("/api/resolve", {
         method: "POST",
@@ -500,6 +595,7 @@ export class VideoApp extends LitElement {
       }
     } catch (error) {
       if (generation === this.preparationGeneration && this.isConnected) {
+        this.replacementPlayback = null;
         this.fail(
           error instanceof Error && error.name === "TimeoutError"
             ? "Preparation request timed out. A download may still be running; retry preparation."
@@ -570,11 +666,13 @@ export class VideoApp extends LitElement {
         this.source = snapshot.video;
         this.attachReady();
       } else if (snapshot.state === "canceled") {
+        this.replacementPlayback = null;
         this.notice = {
           phase: "canceled",
           text: "Download canceled. Partial files removed.",
         };
       } else {
+        this.replacementPlayback = null;
         this.fail(
           snapshot.state === "error"
             ? snapshot.error
@@ -751,35 +849,19 @@ export class VideoApp extends LitElement {
   };
 
   private changeMode(event: Event): void {
+    if (this.busy) {
+      return;
+    }
     const value = (event.currentTarget as HTMLSelectElement).value;
     if (value !== "proxy" && value !== "mp4") {
       return;
     }
 
     this.mode = value;
-    this.updateAddress();
-    if (this.busy) {
-      return;
-    }
-
+    this.savedVariant = undefined;
     if (!this.source) {
-      this.notice = {
-        phase: "idle",
-        text: "Press Prepare video to use the selected mode.",
-      };
-
-      return;
+      this.notice = { phase: "idle", text: "Press Prepare video to apply the selected options." };
     }
-
-    if (this.source.kind === "download" && value === "mp4") {
-      this.resetPlayer();
-      this.attachReady();
-
-      return;
-    }
-
-    // A proxy switch extracts fresh signed URLs; a download reuses the saved MP4.
-    void this.prepare(false);
   }
 
   private replay(entry: Pick<HistoryEntry, "url" | "mp4">): void {
@@ -789,7 +871,9 @@ export class VideoApp extends LitElement {
 
     this.url = entry.url;
     this.startSeconds = undefined;
-    this.mode = entry.mp4.sizeBytes !== null ? "mp4" : "proxy";
+    const file = preferredSavedFile(entry.mp4.variants);
+    this.mode = file ? "mp4" : "proxy";
+    this.savedVariant = file?.variant;
     this.focusPlayer();
     void this.prepare();
   }
@@ -846,17 +930,26 @@ export class VideoApp extends LitElement {
   private async deleteEntry(
     entry: Pick<HistoryEntry, "id" | "title">,
     filesOnly: boolean,
+    file?: SavedFile,
   ): Promise<void> {
     if (this.busy) {
       return;
     }
 
-    const action = filesOnly ? "Delete downloaded files" : "Delete files and history";
+    const action = file
+      ? `Delete ${savedQualityLabel(file)} MP4`
+      : filesOnly
+        ? "Delete downloaded files"
+        : "Delete files and history";
     if (!window.confirm(`${action} for "${entry.title}"?`)) {
       return;
     }
 
-    if (this.source?.id === entry.id) {
+    if (
+      this.source?.id === entry.id &&
+      (!filesOnly ||
+        (this.source.kind === "download" && (!file || this.source.variant === file.variant)))
+    ) {
       this.source = null;
       this.resetPlayer();
     }
@@ -866,7 +959,7 @@ export class VideoApp extends LitElement {
     this.invalidateStorage();
 
     try {
-      const path = `/api/history/${entry.id}${filesOnly ? "/files" : ""}`;
+      const path = `/api/history/${entry.id}${filesOnly ? "/files" : ""}${file ? `/${file.variant}` : ""}`;
       const response = await fetch(path, { method: "DELETE" });
       if (!response.ok) {
         const failure = ApiErrorSchema.safeParse(await response.json().catch(() => null));
@@ -881,8 +974,12 @@ export class VideoApp extends LitElement {
 
       await this.refreshLibrary();
       this.notice = {
-        phase: "idle",
-        text: filesOnly ? "Downloaded files deleted." : "Files and history deleted.",
+        phase: this.source ? this.notice.phase : "idle",
+        text: file
+          ? "Saved MP4 deleted."
+          : filesOnly
+            ? "Downloaded files deleted."
+            : "Files and history deleted.",
       };
     } catch (error) {
       this.fail(error instanceof Error ? error.message : "Could not delete video.");
@@ -997,6 +1094,12 @@ export class VideoApp extends LitElement {
     const seconds = Number.isFinite(duration) ? Math.min(position, duration) : position;
 
     try {
+      if (this.pendingSettings) {
+        this.player.playbackRate = this.pendingSettings.playbackRate;
+        this.player.volume = this.pendingSettings.volume;
+        this.player.muted = this.pendingSettings.muted;
+        this.pendingSettings = null;
+      }
       this.player.currentTime = seconds;
       this.pendingResumeSeconds = null;
       if (seconds !== position && this.notice.phase === "ready") {
@@ -1264,6 +1367,7 @@ export class VideoApp extends LitElement {
         <form id="resolve" @submit=${this.submit}>
           <label class="vh" for="url">YouTube video URL</label>
           <label class="vh" for="player-mode">Playback mode</label>
+          <label class="vh" for="video-quality">Max quality</label>
           <div class="player-controls tool-bar">
             <div class="clearable-input">
               <input
@@ -1293,8 +1397,17 @@ export class VideoApp extends LitElement {
               @change=${this.changeMode}
               ?disabled=${this.busy}
             >
-              <option value="proxy">Proxy YouTube HLS (starts sooner)</option>
-              <option value="mp4">Download + Native MP4</option>
+              <option value="proxy">Stream (HLS)</option>
+              <option value="mp4">Save MP4</option>
+            </select>
+            <select
+              id="video-quality"
+              .value=${this.quality}
+              @change=${this.changeQuality}
+              ?disabled=${this.busy}
+              aria-describedby="quality-hint"
+            >
+              ${QualitySchema.options.map((quality) => html`<option value=${quality} .selected=${quality === this.quality}>${qualityLabel(quality)}</option>`)}
             </select>
             <strong>
               <button
@@ -1319,6 +1432,22 @@ export class VideoApp extends LitElement {
             </button>
           </div>
         </form>
+        <p class="hint quality-hint" id="quality-hint">${qualityLabel(this.quality)} applies when you prepare.${
+          this.quality === "best"
+            ? " No height limit; may use more bandwidth and disk."
+            : this.mode === "proxy"
+              ? " Streaming can adapt below this limit."
+              : " Each cap uses a separate saved file."
+        }</p>
+        ${
+          this.source
+            ? html`<p class="quality-current" id="current-quality" role="status" aria-live="polite">${
+                this.source.kind === "download"
+                  ? `MP4 · ${savedQualityLabel({ variant: this.source.variant, ...this.source.quality })}`
+                  : `Auto · ${qualityLabel(this.source.quality.requested)}${this.currentHeight === null ? "" : ` · currently ${this.currentHeight}p`}`
+              }</p>`
+            : nothing
+        }
 
         <p
           id="status"
@@ -1332,8 +1461,8 @@ export class VideoApp extends LitElement {
             ? html`
                 <p class="hint">${
                   this.mode === "proxy"
-                    ? "Retry preparation or choose Download + Native MP4."
-                    : "Retry preparation or try Proxy YouTube HLS."
+                    ? "Retry preparation or choose Save MP4."
+                    : "Retry preparation or try Stream (HLS)."
                 }</p>
               `
             : ""
@@ -1511,7 +1640,7 @@ export class VideoApp extends LitElement {
         <section class="download-progress" aria-labelledby="download-heading">
           <div class="download-top">
             <div>
-              <strong id="download-heading">Preparing MP4</strong>
+              <strong id="download-heading">${this.preparationHeading}</strong>
               <span class="download-phase">${
                 canceling ? "Canceling download…" : downloadPhases[phase]
               }</span>
@@ -1763,7 +1892,7 @@ export class VideoApp extends LitElement {
         </thead>
         <tbody>${repeat(
           files,
-          (file) => file.id,
+          (file) => `${file.id}:${file.variant}`,
           (file) => this.renderStorageFile(file, historyById.get(file.id), largestBytes),
         )}</tbody>
       </table>
@@ -1778,14 +1907,15 @@ export class VideoApp extends LitElement {
     const title = savedTitle(file);
     const replay = {
       url: `https://www.youtube.com/watch?v=${file.id}`,
-      mp4: { sizeBytes: file.sizeBytes },
+      mp4: { sizeBytes: file.sizeBytes, variants: [file] },
     };
 
     return html`
-      <tr class="saved-file-item" data-id=${file.id}>
+      <tr class="saved-file-item" data-id=${file.id} data-variant=${file.variant}>
         <td class="storage-details">
           <strong>${title}</strong>
           <span class="history-meta">${file.channel ?? "Channel unavailable"}</span>
+          <span class="history-meta saved-quality">${savedQualityLabel(file)}</span>
           <time class="history-time" datetime=${file.modifiedAt}>Modified ${new Date(file.modifiedAt).toLocaleString()}</time>
           ${
             !history
@@ -1818,10 +1948,10 @@ export class VideoApp extends LitElement {
             <button
               class="warn iconbutton <big>"
               type="button"
-              aria-label=${`Delete downloaded files for ${title}`}
-              title="Delete files"
+              aria-label=${`Delete ${savedQualityLabel(file)} MP4 for ${title}`}
+              title="Delete this MP4"
               ?disabled=${this.busy}
-              @click=${() => this.deleteEntry({ id: file.id, title }, true)}
+              @click=${() => this.deleteEntry({ id: file.id, title }, true, file)}
             >
               <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#delete-file-icon"></use></svg>
             </button>
@@ -1871,7 +2001,7 @@ export class VideoApp extends LitElement {
             mp4Available
               ? html`
                   <span class="badges" aria-label="Downloaded files">
-                    <chip class="archive">MP4 · ${fileSize(entry.mp4.sizeBytes)}</chip>
+                    ${entry.mp4.variants.map((file) => html`<chip class="archive">MP4 · ${savedQualityLabel(file)} · ${fileSize(file.sizeBytes)}</chip>`)}
                   </span>
                 `
               : nothing

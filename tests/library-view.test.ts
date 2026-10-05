@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { historyView, savedTitle, storageView } from "../app/client/library-view";
+import {
+  historyView,
+  preferredSavedFile,
+  savedQualityLabel,
+  savedTitle,
+  storageView,
+} from "../app/client/library-view";
 import type { HistoryEntry, StorageFile } from "../app/protocol";
 
 function entry(id: string, overrides: Partial<HistoryEntry> = {}): HistoryEntry {
@@ -11,7 +17,7 @@ function entry(id: string, overrides: Partial<HistoryEntry> = {}): HistoryEntry 
     duration: 120,
     lastWatchedAt: "2026-10-01T10:00:00.000Z",
     positionSeconds: 0,
-    mp4: { sizeBytes: null },
+    mp4: { sizeBytes: null, variants: [] },
     ...overrides,
   };
 }
@@ -19,6 +25,9 @@ function entry(id: string, overrides: Partial<HistoryEntry> = {}): HistoryEntry 
 function file(id: string, overrides: Partial<StorageFile> = {}): StorageFile {
   return {
     id,
+    variant: "720",
+    requested: null,
+    height: null,
     title: "Tiny server",
     channel: "Systems",
     sizeBytes: 10,
@@ -53,9 +62,21 @@ test("search handles Unicode, empty queries, and matches beyond the first 12 row
 
 test("Recent first and Oldest first order last playback time regardless of MP4 size/presence", () => {
   const rows = [
-    entry("bbbbbbbbbbb", { lastWatchedAt: "2026-10-02T00:00:00.000Z", mp4: { sizeBytes: 500 } }),
+    entry("bbbbbbbbbbb", {
+      lastWatchedAt: "2026-10-02T00:00:00.000Z",
+      mp4: {
+        sizeBytes: 500,
+        variants: [{ variant: "720", requested: null, height: null, sizeBytes: 500 }],
+      },
+    }),
     entry("aaaaaaaaaaa", { lastWatchedAt: "2026-10-03T00:00:00.000Z" }),
-    entry("ccccccccccc", { lastWatchedAt: "2026-10-01T00:00:00.000Z", mp4: { sizeBytes: 9999 } }),
+    entry("ccccccccccc", {
+      lastWatchedAt: "2026-10-01T00:00:00.000Z",
+      mp4: {
+        sizeBytes: 9999,
+        variants: [{ variant: "720", requested: null, height: null, sizeBytes: 9999 }],
+      },
+    }),
   ];
 
   expect(historyView(rows, "", "recent").map((row) => row.id)).toEqual([
@@ -142,4 +163,21 @@ test("filtering returns all matches and empty datasets remain empty under every 
   expect(historyView([], "", "oldest")).toEqual([]);
   expect(storageView([], "", "largest")).toEqual([]);
   expect(storageView([], "", "most-recent")).toEqual([]);
+});
+
+test("equal-size qualities of one video have stable order and do not lose a row", () => {
+  const files = [file("aaaaaaaaaaa", { variant: "1080" }), file("aaaaaaaaaaa", { variant: "360" })];
+  expect(storageView(files, "", "largest").map((file) => file.variant)).toEqual(["360", "1080"]);
+});
+
+test("history replay prefers the 720 slot, then highest known height, then an unverified slot", () => {
+  const unverified = file("aaaaaaaaaaa", { variant: "480" });
+  const high = file("aaaaaaaaaaa", { variant: "1080", requested: "1080", height: 720 });
+  const standard = file("aaaaaaaaaaa", { variant: "720", requested: "720", height: 360 });
+  expect(preferredSavedFile([unverified, high, standard])).toBe(standard);
+  expect(preferredSavedFile([unverified, high])).toBe(high);
+  expect(preferredSavedFile([unverified])).toBe(unverified);
+  expect(preferredSavedFile([])).toBeUndefined();
+  expect(savedQualityLabel(high)).toBe("720p (Up to 1080p)");
+  expect(savedQualityLabel(unverified)).toBe("Quality unknown (480 slot, unverified)");
 });

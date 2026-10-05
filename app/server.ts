@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, rmSync } from "node:fs";
-import { mkdir, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BunRequest } from "bun";
 import page from "./index.html";
@@ -21,14 +21,20 @@ import {
   type PreparationSnapshot,
   type ProgressRequest,
   ProgressRequestSchema,
+  type Quality,
   type ResolvedVideo,
   type ResolveRequest,
   ResolveRequestSchema,
+  type SavedFile,
+  type SavedVariant,
+  SavedVariantSchema,
   TransferProgressSchema,
   type WatchRequest,
   WatchRequestSchema,
 } from "./protocol";
 import { ProxySession, type UpstreamFetch } from "./proxy";
+import { qualityHeight, qualityLabel } from "./quality";
+import { readSavedFile, savedDirectory } from "./saved-media";
 
 const json = (value: ApiResponse, status = 200) =>
   Response.json(value, {
@@ -132,6 +138,17 @@ function byteRange(header: string, size: number): [number, number] | null {
   return [start, Math.min(end, size - 1)];
 }
 
+async function lstatIfExists(path: string) {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
 export function startServer({
   port = 3000,
   hostname = "127.0.0.1",
@@ -161,6 +178,7 @@ export function startServer({
 
   type DownloadJob = {
     token: string;
+    quality: Quality;
     controller: AbortController;
     snapshot: PreparationSnapshot;
     lastActivity: number;
@@ -241,15 +259,24 @@ export function startServer({
     let activeExtractions = 0;
     let shuttingDown = false;
 
-    function downloadResult(id: string, url: string, video: DownloadedVideo): ResolvedVideo {
+    function downloadResult(
+      id: string,
+      url: string,
+      video: DownloadedVideo,
+      file: Pick<SavedFile, "variant" | "requested" | "height">,
+    ): ResolvedVideo {
       const result: ResolvedVideo = {
         kind: "download",
         id,
         url,
         token: crypto.randomUUID(),
-        ...video,
+        title: video.title,
+        channel: video.channel,
+        duration: video.duration,
         positionSeconds: library.position(id),
-        stream: `/api/stream/${id}`,
+        stream: `/api/stream/${id}/${file.variant}`,
+        variant: file.variant,
+        quality: { requested: file.requested, height: file.height },
       };
 
       resolved.set(result.token, result);
@@ -286,7 +313,7 @@ export function startServer({
       }
     }
 
-    function startPreparation(id: string, url: string): DownloadJob | null {
+    function startPreparation(id: string, url: string, quality: Quality): DownloadJob | null {
       if (activeDownloads >= 2) {
         return null;
       }
@@ -295,6 +322,7 @@ export function startServer({
 
       const job: DownloadJob = {
         token: crypto.randomUUID(),
+        quality,
         controller: new AbortController(),
         snapshot: {
           state: "preparing",
@@ -318,7 +346,11 @@ export function startServer({
           (video) => {
             job.snapshot = {
               state: "ready",
-              video: downloadResult(id, url, video),
+              video: downloadResult(id, url, video, {
+                variant: quality,
+                requested: quality,
+                height: video.height ?? null,
+              }),
             };
           },
           (error) => {
@@ -445,6 +477,7 @@ export function startServer({
 
         const videoUrl = canonicalVideoUrl(body.url);
         const id = videoUrl.slice(-11);
+        const quality = body.quality ?? "720";
         if (body.mode === "proxy") {
           sweepExpiredProxies();
           if (proxies.size >= 16 || activeExtractions >= 2) {
@@ -454,13 +487,13 @@ export function startServer({
           activeExtractions++;
 
           try {
-            const source = await extractHls(videoUrl);
+            const source = await extractHls(videoUrl, quality);
             if (shuttingDown) {
               return jsonError("Server is stopping. Retry later.", 503);
             }
 
             const token = crypto.randomUUID();
-            const proxy = new ProxySession(source, upstreamFetch, now());
+            const proxy = new ProxySession(source, upstreamFetch, now(), quality);
 
             await proxy.prepare(token);
             if (shuttingDown) {
@@ -479,6 +512,7 @@ export function startServer({
               duration: source.duration,
               positionSeconds: library.position(id),
               hls: `/api/proxy/${token}/0`,
+              quality: { requested: quality, availableHeights: proxy.availableHeights },
             });
           } finally {
             activeExtractions--;
@@ -489,47 +523,58 @@ export function startServer({
           return jsonError("Video is being deleted. Retry later.", 409);
         }
 
+        const variant = body.savedVariant ?? quality;
+        const cached = await readSavedFile(mediaRoot, id, variant);
+        if (deleting.has(id)) {
+          return jsonError("Video is being deleted. Retry later.", 409);
+        }
+        if (shuttingDown) {
+          return jsonError("Server is stopping. Retry later.", 503);
+        }
+
+        // Recheck admission after filesystem awaits. Never join a different cap.
         let job = preparing.get(id);
-        if (!job) {
-          const file = Bun.file(join(mediaRoot, id, "video.mp4"));
-          const usable = (await file.exists()) && file.size > 0;
-          if (deleting.has(id)) {
-            return jsonError("Video is being deleted. Retry later.", 409);
-          }
-          if (shuttingDown) {
-            return jsonError("Server is stopping. Retry later.", 503);
-          }
-
-          // Recheck after the filesystem await: another resolve may have started.
-          job = preparing.get(id);
-          if (!job && usable) {
-            return json(
-              downloadResult(
-                id,
-                videoUrl,
-                library.metadata(id) ?? {
-                  title: "Untitled video",
-                  duration: null,
-                  channel: null,
-                },
-              ),
-            );
-          }
-
-          if (!job) {
-            job = startPreparation(id, videoUrl) ?? undefined;
-          }
-        }
-        if (!job) {
-          return jsonError("Two downloads are already in progress.", 429);
-        }
-        if (job.unsafe) {
+        if (job?.unsafe) {
           return jsonError(
             "A download could not be stopped safely. Stop its processes before restarting the server.",
             503,
           );
         }
-
+        if (cached) {
+          if (body.savedVariant === undefined && cached.requested !== quality) {
+            return jsonError(
+              "Saved quality metadata is missing or invalid. Delete this file and prepare it again, or play it explicitly from Saved MP4s.",
+              409,
+            );
+          }
+          return json(
+            downloadResult(
+              id,
+              videoUrl,
+              library.metadata(id) ?? {
+                title: "Untitled video",
+                duration: null,
+                channel: null,
+              },
+              cached,
+            ),
+          );
+        }
+        if (body.savedVariant !== undefined) {
+          return jsonError("File missing. Choose a quality and prepare it again.", 404);
+        }
+        if (job && job.quality !== quality) {
+          return jsonError(
+            `This video is preparing ${qualityLabel(job.quality).toLowerCase()}. Wait or cancel before preparing another quality.`,
+            409,
+          );
+        }
+        if (!job) {
+          job = startPreparation(id, videoUrl, quality) ?? undefined;
+        }
+        if (!job) {
+          return jsonError("Two downloads are already in progress.", 429);
+        }
         job.lastActivity = now();
 
         return json({ kind: "preparing", jobToken: job.token }, 202);
@@ -543,17 +588,38 @@ export function startServer({
 
     async function prepareDownload(id: string, url: string, job: DownloadJob) {
       const dir = join(mediaRoot, id);
-      const mp4 = join(dir, "video.mp4");
+      const target = savedDirectory(mediaRoot, id, job.quality);
       const stage = join(dir, `.staging-${crypto.randomUUID()}`);
       let cleanupSafe = true;
 
       try {
         job.controller.signal.throwIfAborted();
-        await mkdir(stage, { recursive: true });
+        await mkdir(dir, { recursive: true });
+        if (!(await lstat(dir)).isDirectory()) {
+          throw new InputError("The video's media directory is not a regular directory.");
+        }
+        const slot = await lstatIfExists(target);
+        if (slot) {
+          if (!slot.isDirectory()) {
+            throw new InputError(
+              "This quality slot is not a regular directory. Delete it before preparing again.",
+            );
+          }
+          // A missing/empty MP4 can be repaired; never replace playable bytes.
+          const file = await lstatIfExists(join(target, "video.mp4"));
+          if (file && (!file.isFile() || file.size > 0)) {
+            throw new InputError(
+              "This quality slot already exists. Play it from Saved MP4s or delete it before preparing again.",
+            );
+          }
+          await rm(target, { recursive: true, force: true });
+        }
+        await mkdir(stage);
         job.controller.signal.throwIfAborted();
 
         const stagedMp4 = join(stage, "video.mp4");
         const video = await download(url, stagedMp4, {
+          quality: job.quality,
           signal: job.controller.signal,
           onProgress: (value) => {
             if (
@@ -596,12 +662,24 @@ export function startServer({
           speedBytesPerSecond: null,
         };
 
-        const staged = Bun.file(stagedMp4);
-        if (!(await staged.exists()) || staged.size === 0) {
+        const staged = await lstatIfExists(stagedMp4);
+        if (!staged?.isFile() || staged.size === 0) {
           throw new InputError("yt-dlp did not create a nonempty MP4 file.");
         }
 
-        await rename(stagedMp4, mp4);
+        const height = video.height ?? null;
+        const cap = qualityHeight(job.quality);
+        if (
+          height !== null &&
+          (!Number.isSafeInteger(height) || height <= 0 || (cap !== null && height > cap))
+        ) {
+          throw new InputError("Downloaded video exceeds the requested quality limit.");
+        }
+        await writeFile(
+          join(stage, "quality.json"),
+          JSON.stringify({ version: 1, requested: job.quality, height }),
+        );
+        await rename(stage, target);
         library.remember(id, video);
 
         return video;
@@ -657,17 +735,24 @@ export function startServer({
       return jsonOK();
     }
 
-    async function serveMp4(id: string, method: string, rangeHeader: string | null) {
-      if (!validVideoId(id)) {
+    async function serveMp4(
+      id: string,
+      method: string,
+      rangeHeader: string | null,
+      variantValue: string,
+    ) {
+      const variant = SavedVariantSchema.safeParse(variantValue);
+      if (!validVideoId(id) || !variant.success) {
         return notFound();
       }
 
-      const file = Bun.file(join(mediaRoot, id, "video.mp4"));
-      if (!(await file.exists()) || file.size === 0) {
+      const saved = await readSavedFile(mediaRoot, id, variant.data);
+      if (!saved) {
         return jsonError("File missing. Download again.", 404);
       }
 
-      const size = file.size;
+      const file = Bun.file(join(savedDirectory(mediaRoot, id, variant.data), "video.mp4"));
+      const size = saved.sizeBytes;
       const range = rangeHeader === null ? null : byteRange(rangeHeader, size);
       const headers = new Headers({
         "Content-Type": "video/mp4",
@@ -697,7 +782,7 @@ export function startServer({
       return new Response(method === "HEAD" ? null : file, { headers });
     }
 
-    async function deleteHistory(id: string, filesOnly: boolean) {
+    async function deleteHistory(id: string, filesOnly: boolean, variant?: SavedVariant) {
       if (!validVideoId(id)) {
         return notFound();
       }
@@ -708,13 +793,30 @@ export function startServer({
       deleting.add(id);
 
       try {
-        await rm(join(mediaRoot, id), { recursive: true, force: true });
+        if (variant) {
+          try {
+            if (!(await lstat(join(mediaRoot, id))).isDirectory()) {
+              return notFound();
+            }
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+              throw error;
+            }
+          }
+        }
+        await rm(variant ? savedDirectory(mediaRoot, id, variant) : join(mediaRoot, id), {
+          recursive: true,
+          force: true,
+        });
         if (!filesOnly) {
           library.delete(id);
         }
 
         for (const [token, video] of resolved) {
-          if (video.id === id && (!filesOnly || video.kind === "download")) {
+          if (
+            video.id === id &&
+            (!filesOnly || (video.kind === "download" && (!variant || video.variant === variant)))
+          ) {
             resolved.delete(token);
             if (video.kind === "proxy") {
               proxies.delete(token);
@@ -858,15 +960,33 @@ export function startServer({
         "/api/history/:id/files": {
           DELETE: mutationRoute((request) => deleteHistory(request.params.id, true)),
         },
+        "/api/history/:id/files/:variant": {
+          DELETE: mutationRoute((request) => {
+            const variant = SavedVariantSchema.safeParse(request.params.variant);
+            return variant.success
+              ? deleteHistory(request.params.id, true, variant.data)
+              : notFound();
+          }),
+        },
         "/api/history/:id": {
           DELETE: mutationRoute((request) => deleteHistory(request.params.id, false)),
         },
-        "/api/stream/:id": {
+        "/api/stream/:id/:variant": {
           GET: readRoute((request) =>
-            serveMp4(request.params.id, request.method, request.headers.get("range")),
+            serveMp4(
+              request.params.id,
+              request.method,
+              request.headers.get("range"),
+              request.params.variant,
+            ),
           ),
           HEAD: readRoute((request) =>
-            serveMp4(request.params.id, request.method, request.headers.get("range")),
+            serveMp4(
+              request.params.id,
+              request.method,
+              request.headers.get("range"),
+              request.params.variant,
+            ),
           ),
         },
         "/api/proxy/:token/:resource": {

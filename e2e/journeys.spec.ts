@@ -88,7 +88,7 @@ test("native preparation, user playback and saved watch/progress survive page re
   await entry.getByRole("button", { name: "Play Local fixture video", exact: true }).click();
 
   await expect(page.locator("#status")).toHaveAttribute("data-phase", "ready");
-  await expect(page.locator("video")).toHaveAttribute("src", `/api/stream/${id}`);
+  await expect(page.locator("video")).toHaveAttribute("src", `/api/stream/${id}/720`);
   expect(await page.locator("video").evaluate((video: HTMLVideoElement) => video.paused)).toBe(
     true,
   );
@@ -97,11 +97,14 @@ test("native preparation, user playback and saved watch/progress survive page re
   const confirmation = page.waitForEvent("dialog");
   const deleting = page
     .locator(`.saved-file-item[data-id="${id}"]`)
-    .getByRole("button", { name: "Delete downloaded files for Local fixture video", exact: true })
+    .getByRole("button", {
+      name: "Delete 90p (Up to 720p) MP4 for Local fixture video",
+      exact: true,
+    })
     .click();
   await (await confirmation).accept();
   await deleting;
-  await expect(page.locator("#status")).toHaveText("Downloaded files deleted.");
+  await expect(page.locator("#status")).toHaveText("Saved MP4 deleted.");
   await expect(page.locator(`.saved-file-item[data-id="${id}"]`)).toHaveCount(0);
   expect(
     StorageListSchema.parse(await (await page.request.get("/api/storage")).json()).find(
@@ -156,6 +159,7 @@ test("default proxy mode plays real rewritten local HLS with separate audio thro
   expect(videoSegments.length).toBeGreaterThan(0);
 
   await play(page);
+  await expect(page.locator("#current-quality")).toContainText("Auto · Up to 720p · currently 90p");
 
   // page's response events are browser requests, not APIRequestContext reads.
   await expect
@@ -191,7 +195,7 @@ test("active native download cancels globally, confirms cleanup, and permits a s
   expect(await (await page.request.get(`/api/downloads/${jobToken}`)).json()).toEqual({
     state: "canceled",
   });
-  expect((await page.request.get(`/api/stream/${id}`)).status()).toBe(404);
+  expect((await page.request.get(`/api/stream/${id}/720`)).status()).toBe(404);
   expect((await rows(page)).find((row) => row.id === id)).toBeUndefined();
 
   const retry = page.waitForResponse(
@@ -205,5 +209,104 @@ test("active native download cancels globally, confirms cleanup, and permits a s
   expect(response.status()).toBe(202);
   expect((await response.json()).jobToken).not.toBe(jobToken);
   await expect(page.locator("#status")).toHaveAttribute("data-phase", "ready");
-  await expect(page.locator("video")).toHaveAttribute("src", `/api/stream/${id}`);
+  await expect(page.locator("video")).toHaveAttribute("src", `/api/stream/${id}/720`);
+});
+
+test("quality changes are explicit, preserve the same-video playhead, and save/replay/delete distinct cap files", async ({
+  page,
+  context,
+}) => {
+  const id = "quality0001";
+  expect((await page.request.delete(`/api/history/${id}`)).ok()).toBe(true);
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const requests: Record<string, unknown>[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/resolve") {
+      requests.push(request.postDataJSON());
+    }
+  });
+  await page.goto(`/?url=${encodeURIComponent(`https://youtu.be/${id}`)}&mode=mp4&quality=360&t=2`);
+  await expect(page.locator("#status")).toHaveAttribute("data-phase", "ready");
+  const player = page.locator("video");
+  const original = await player.elementHandle();
+  await player.evaluate((video: HTMLVideoElement) => {
+    if (video.readyState === 0) {
+      video.preload = "metadata";
+      video.load();
+    }
+  });
+  await expect
+    .poll(() => player.evaluate((video: HTMLVideoElement) => video.currentTime))
+    .toBeCloseTo(2, 1);
+  await player.evaluate((video: HTMLVideoElement) => {
+    video.currentTime = 8.5;
+    video.playbackRate = 1.75;
+    video.volume = 0.3;
+    video.muted = true;
+  });
+  await expect
+    .poll(() => player.evaluate((video: HTMLVideoElement) => video.currentTime))
+    .toBeCloseTo(8.5, 1);
+  const count = requests.length;
+  await page.getByLabel("Max quality", { exact: true }).selectOption("1080");
+  await expect(player).toHaveAttribute("src", `/api/stream/${id}/360`);
+  expect(requests).toHaveLength(count);
+  await expect(page.locator("#current-quality")).toContainText("90p (Up to 360p)");
+  await page.getByRole("button", { name: "Copy timestamp link", exact: true }).click();
+  const copied = new URL(await page.evaluate(() => navigator.clipboard.readText()));
+  expect(copied.searchParams.get("quality")).toBe("360");
+  expect(copied.searchParams.get("t")).toBe("8");
+  await page.getByLabel("Playback mode").selectOption("proxy");
+  await expect(player).toHaveAttribute("src", `/api/stream/${id}/360`);
+  expect(requests).toHaveLength(count);
+  await page.getByLabel("Playback mode").selectOption("mp4");
+  await expect(player).toHaveAttribute("src", `/api/stream/${id}/360`);
+  expect(requests).toHaveLength(count);
+
+  await page.getByRole("button", { name: "Prepare video", exact: true }).click();
+  await expect(page.locator("#status")).toHaveAttribute("data-phase", "ready");
+  await expect(player).toHaveAttribute("src", `/api/stream/${id}/1080`);
+  await expect
+    .poll(() => player.evaluate((video: HTMLVideoElement) => video.currentTime))
+    .toBeCloseTo(8.5, 1);
+  expect(
+    await player.evaluate((video: HTMLVideoElement) => ({
+      rate: video.playbackRate,
+      volume: video.volume,
+      muted: video.muted,
+      paused: video.paused,
+    })),
+  ).toEqual({ rate: 1.75, volume: 0.3, muted: true, paused: true });
+  expect(await page.evaluate((node) => document.querySelector("video") === node, original)).toBe(
+    true,
+  );
+  expect(new URL(page.url()).searchParams.get("t")).toBe("8");
+  await expect(page.locator("#current-quality")).toContainText("90p (Up to 1080p)");
+  await play(page);
+  await expect.poll(async () => (await rows(page)).some((row) => row.id === id)).toBe(true);
+  await player.evaluate((video: HTMLVideoElement) => video.pause());
+
+  await page.goto("/");
+  await expect(page.getByLabel("Max quality", { exact: true })).toHaveValue("1080");
+  await page.getByRole("button", { name: "Saved MP4s", exact: true }).click();
+  const files = page.locator(`.saved-file-item[data-id="${id}"]`);
+  await expect(files).toHaveCount(2);
+  const lowRow = page.locator(`.saved-file-item[data-id="${id}"][data-variant="360"]`);
+  await lowRow.getByRole("button", { name: "Play Local fixture video", exact: true }).click();
+  await expect(player).toHaveAttribute("src", `/api/stream/${id}/360`);
+  expect(requests.at(-1)).toMatchObject({ mode: "mp4", savedVariant: "360" });
+  const highRow = page.locator(`.saved-file-item[data-id="${id}"][data-variant="1080"]`);
+  await highRow.getByRole("button", { name: "Play Local fixture video", exact: true }).click();
+  await expect(player).toHaveAttribute("src", `/api/stream/${id}/1080`);
+  const confirmed = page.waitForEvent("dialog");
+  const deleting = lowRow.getByRole("button", { name: /Delete .* MP4/ }).click();
+  await (await confirmed).accept();
+  await deleting;
+  await expect(files).toHaveCount(1);
+  await expect(player).toHaveAttribute("src", `/api/stream/${id}/1080`);
+  const row = (await rows(page)).find((row) => row.id === id);
+  expect(row?.mp4.variants.map((file) => file.variant)).toEqual(["1080"]);
+  expect((await page.request.get(`/api/stream/${id}/360`)).status()).toBe(404);
+  expect((await page.request.get(`/api/stream/${id}/1080`)).ok()).toBe(true);
+  await page.request.delete(`/api/history/${id}`);
 });

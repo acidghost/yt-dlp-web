@@ -156,7 +156,7 @@ test("MP4 admission does not await a held download; shared progress and cancella
   await until(base, token, "canceled");
 
   expect(await readdir(join(app.dataDir, "media", "abcdefghijk"))).toEqual([]);
-  expect((await fetch(`${base}/api/stream/abcdefghijk`)).status).toBe(404);
+  expect((await fetch(`${base}/api/stream/abcdefghijk/720`)).status).toBe(404);
   expect(await history(base)).toEqual([]);
   expect((await cancel(base, token)).status).toBe(200);
 
@@ -170,7 +170,7 @@ test("MP4 admission does not await a held download; shared progress and cancella
 
   expect(ready.video).toMatchObject({
     kind: "download",
-    stream: "/api/stream/abcdefghijk",
+    stream: "/api/stream/abcdefghijk/720",
   });
   expect((await snapshot(base, token)).state).toBe("canceled");
 });
@@ -202,9 +202,9 @@ test("ready result is stable, completed files are reused, and late cancel keeps 
   expect(cached.status).toBe(200);
   expect((await cached.json()).kind).toBe("download");
   expect(calls).toBe(1);
-  expect(await Bun.file(join(app.dataDir, "media", "abcdefghijk", "video.mp4")).text()).toBe(
-    "complete",
-  );
+  expect(
+    await Bun.file(join(app.dataDir, "media", "abcdefghijk", "q-720", "video.mp4")).text(),
+  ).toBe("complete");
 });
 
 test("job routes retain origin guards, token validation, and private snapshots", async () => {
@@ -430,7 +430,7 @@ test.each(["missing", "empty"] as const)(
       state: "error",
       error: "yt-dlp did not create a nonempty MP4 file.",
     });
-    expect((await fetch(`${base}/api/stream/abcdefghijk`)).status).toBe(404);
+    expect((await fetch(`${base}/api/stream/abcdefghijk/720`)).status).toBe(404);
     expect((await watched(base, "abcdefghijk", token)).status).toBe(404);
     expect(await history(base)).toEqual([]);
     expect(await readdir(join(app.dataDir, "media", "abcdefghijk"))).toEqual([]);
@@ -443,9 +443,9 @@ test.each(["missing", "empty"] as const)(
 
     expect(ready.video.kind).toBe("download");
     expect(calls).toBe(2);
-    expect(await Bun.file(join(app.dataDir, "media", "abcdefghijk", "video.mp4")).text()).toBe(
-      "complete",
-    );
+    expect(
+      await Bun.file(join(app.dataDir, "media", "abcdefghijk", "q-720", "video.mp4")).text(),
+    ).toBe("complete");
   },
 );
 
@@ -489,7 +489,7 @@ test("cancel wins before commit even if a downloader finishes and reports late p
   await until(base, token, "canceled");
 
   expect(await readdir(join(app.dataDir, "media", "abcdefghijk"))).toEqual([]);
-  expect((await fetch(`${base}/api/stream/abcdefghijk`)).status).toBe(404);
+  expect((await fetch(`${base}/api/stream/abcdefghijk/720`)).status).toBe(404);
 });
 
 test("cancellation preserves metadata, history, resume, and legacy files", async () => {
@@ -686,24 +686,16 @@ test("finalization is a commit fence: late cancellation/progress cannot discard 
       return meta;
     },
   });
-  const realFile = Bun.file.bind(Bun);
-  const files = spyOn(Bun, "file").mockImplementation(((...args: Parameters<typeof Bun.file>) => {
-    const file = realFile(...args);
-    if (String(args[0]).includes(".staging-")) {
-      const exists = file.exists.bind(file);
-
-      Object.defineProperty(file, "exists", {
-        value: async () => {
-          finalizing.release();
-          await publish.promise;
-
-          return exists();
-        },
-      });
+  const realStat = fs.lstat;
+  const files = spyOn(fs, "lstat").mockImplementation((async (
+    ...args: Parameters<typeof fs.lstat>
+  ) => {
+    if (String(args[0]).includes(".staging-") && String(args[0]).endsWith("/video.mp4")) {
+      finalizing.release();
+      await publish.promise;
     }
-
-    return file;
-  }) as typeof Bun.file);
+    return realStat(...args);
+  }) as typeof fs.lstat);
 
   try {
     const token = await pending(base);
@@ -731,7 +723,7 @@ test("finalization is a commit fence: late cancellation/progress cannot discard 
     publish.release();
     await until(base, token, "ready");
 
-    expect(await (await fetch(`${base}/api/stream/abcdefghijk`)).text()).toBe("complete");
+    expect(await (await fetch(`${base}/api/stream/abcdefghijk/720`)).text()).toBe("complete");
   } finally {
     publish.release();
     await app.app.close();

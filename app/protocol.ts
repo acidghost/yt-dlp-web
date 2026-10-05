@@ -2,10 +2,32 @@ import * as z from "zod";
 
 export type VideoId = string;
 
-export const ResolveRequestSchema = z.object({
-  url: z.string(),
-  mode: z.enum(["proxy", "mp4"]).optional(),
+export const QualitySchema = z.enum(["360", "480", "720", "1080", "best"]);
+export type Quality = z.infer<typeof QualitySchema>;
+
+export const SavedVariantSchema = QualitySchema;
+export type SavedVariant = z.infer<typeof SavedVariantSchema>;
+
+const HeightSchema = z.number().int().positive().nullable();
+export const DownloadQualitySchema = z.object({
+  requested: QualitySchema.nullable(),
+  height: HeightSchema,
 });
+
+export const ResolveRequestSchema = z
+  .object({
+    url: z.string(),
+    mode: z.enum(["proxy", "mp4"]).optional(),
+    quality: QualitySchema.optional(),
+    savedVariant: SavedVariantSchema.optional(),
+  })
+  .refine(
+    (request) =>
+      request.savedVariant === undefined ||
+      (request.mode === "mp4" &&
+        (request.quality === undefined || request.quality === request.savedVariant)),
+    { message: "Saved playback requires MP4 mode and a matching quality." },
+  );
 export type ResolveRequest = z.infer<typeof ResolveRequestSchema>;
 
 export const WatchRequestSchema = z.object({ token: z.string() });
@@ -34,10 +56,19 @@ const VideoFields = z.object({
 });
 
 export const ResolvedVideoSchema = z.discriminatedUnion("kind", [
-  VideoFields.extend({ kind: z.literal("proxy"), hls: z.string() }),
+  VideoFields.extend({
+    kind: z.literal("proxy"),
+    hls: z.string(),
+    quality: z.object({
+      requested: QualitySchema,
+      availableHeights: z.array(z.number().int().positive()).min(1),
+    }),
+  }),
   VideoFields.extend({
     kind: z.literal("download"),
     stream: z.string(),
+    variant: SavedVariantSchema,
+    quality: DownloadQualitySchema,
   }),
 ]);
 export type ResolvedVideo = z.infer<typeof ResolvedVideoSchema>;
@@ -67,6 +98,12 @@ export const PreparationSnapshotSchema = z.discriminatedUnion("state", [
 ]);
 export type PreparationSnapshot = z.infer<typeof PreparationSnapshotSchema>;
 
+export const SavedFileSchema = DownloadQualitySchema.extend({
+  variant: SavedVariantSchema,
+  sizeBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+});
+export type SavedFile = z.infer<typeof SavedFileSchema>;
+
 export const HistoryEntrySchema = z.object({
   id: z.string(),
   url: z.string(),
@@ -75,13 +112,13 @@ export const HistoryEntrySchema = z.object({
   duration: z.number().nullable(),
   lastWatchedAt: z.string(),
   positionSeconds: z.number(),
-  mp4: z.object({ sizeBytes: z.number().nullable() }),
+  mp4: z.object({ sizeBytes: z.number().nullable(), variants: z.array(SavedFileSchema) }),
 });
 
 export const HistoryListSchema = z.array(HistoryEntrySchema);
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 
-export const StorageFileSchema = z.object({
+export const StorageFileSchema = SavedFileSchema.extend({
   id: z.string().regex(/^[a-zA-Z0-9_-]{11}$/),
   title: z.string().nullable(),
   channel: z.string().nullable(),

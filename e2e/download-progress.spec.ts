@@ -17,7 +17,9 @@ const video = {
   channel: null,
   duration: 120,
   positionSeconds: 8,
-  stream: "/api/stream/abcdefghijk",
+  stream: "/api/stream/abcdefghijk/720",
+  variant: "720" as const,
+  quality: { requested: null, height: null },
 };
 
 function active(
@@ -36,7 +38,7 @@ function active(
 async function prepare(page: Page, handler: (route: Route) => Promise<void>, timestamp = "") {
   await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/resolve", (route) => {
-    expect(route.request().postDataJSON()).toEqual({ url, mode: "mp4" });
+    expect(route.request().postDataJSON()).toEqual({ url, mode: "mp4", quality: "720" });
 
     return route.fulfill({
       status: 202,
@@ -52,6 +54,8 @@ test("Ctrl+K leaves focus on the current control while the URL input is disabled
 }) => {
   await prepare(page, (route) => route.fulfill({ json: active() }));
   await expect(page.getByLabel("YouTube video URL")).toBeDisabled();
+  await expect(page.getByLabel("Max quality", { exact: true })).toBeDisabled();
+  await expect(page.locator("#download-heading")).toContainText("Up to 720p");
   await expect(page.getByRole("button", { name: "Clear URL", exact: true })).toBeDisabled();
 
   const cancel = page.getByRole("button", { name: "Cancel download" });

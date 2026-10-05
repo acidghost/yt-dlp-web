@@ -118,7 +118,7 @@ main {
 }
 
 .player-controls .clearable-input {
-  flex: 1 1 24rem;
+  flex: 1 1 18rem;
 }
 
 .clearable-input input {
@@ -165,14 +165,32 @@ main {
   text-align: start;
 }
 
-#player-mode {
-  flex: 0 1 21rem;
+.player-controls {
+  gap: 0.5rem;
+  align-items: center;
+}
+
+#player-mode,
+#video-quality {
+  min-block-size: 2.75rem;
+  flex: 0 1 11rem;
   min-inline-size: 0;
   inline-size: auto;
 }
 
-/* missing.css .iconbutton and .<big> supply the button treatment and 44px targets. */
-.player-controls button,
+.quality-hint {
+  margin-block: 0.5rem 0;
+  font-size: 0.85rem;
+}
+
+.quality-current {
+  color: var(--muted-fg);
+  margin-block: 0.5rem 0;
+  font-size: 0.9rem;
+}
+
+/* Override missing.css's nested big-button minimum, but keep the inline clear button compact. */
+.player-controls button:not(.input-clear),
 .timestamp-tools button,
 .history-actions button {
   min-block-size: 2.75rem;
@@ -768,6 +786,12 @@ main {
 }
 
 @media (max-width: 32rem) {
+  .player-controls .clearable-input,
+  #player-mode,
+  #video-quality {
+    flex: 1 1 100%;
+  }
+
   .storage-table .action-column {
     inline-size: 3.75rem;
   }

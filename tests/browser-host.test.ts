@@ -65,7 +65,7 @@ test("browser host uses real preparation/history, rewritten audio/video HLS and 
     await waitForSnapshot(base, jobToken, "canceled");
 
     expect(await readdir(join(dir, "media", "cancel00001"))).toEqual([]);
-    expect((await fetch(`${base}/api/stream/cancel00001`)).status).toBe(404);
+    expect((await fetch(`${base}/api/stream/cancel00001/720`)).status).toBe(404);
     expect((await resolveVideo(base, "https://youtu.be/cancel00001")).kind).toBe("download");
   } finally {
     await app.close();

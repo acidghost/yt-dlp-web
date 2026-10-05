@@ -45,6 +45,7 @@ export function startBrowserHost(dataDir: string, port: number) {
         title: "Local fixture video",
         channel: "Local fixture channel",
         duration: 12,
+        height: 90,
       };
     },
     extractHls: async () => ({

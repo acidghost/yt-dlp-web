@@ -33,9 +33,10 @@ unit tests remain; there is no coverage quota or test-per-module requirement.
 
 ### Browser projects
 
-- **`journeys`**: three short real-API flows—native prepare/play/watch/progress/
+- **`journeys`**: four real-API flows—native prepare/play/watch/progress/
   reload/replay; default proxy playback with rewritten separate audio/video
-  HLS; active cancellation/cleanup/retry. No application API interception,
+  HLS; active cancellation/cleanup/retry; explicit quality replacement with
+  playhead/settings preservation and distinct-file replay/deletion. No application API interception,
   invented tokens or fake history. The checked-in `e2e/support/server.ts`
   supplies only external download/extraction/CDN collaborators to the normal
   `startServer()` interface. Files, publication and SQLite remain real.
@@ -59,6 +60,24 @@ node_modules/.bin/playwright test --project browser-integration
 
 `tests/browser-host.test.ts` verifies host wiring through actual APIs and real
 MPEG-TS fixture bytes, but **does not prove browser decoding or UI wiring**.
+
+## Quality coverage
+
+`tests/quality.test.ts` exercises the real HTTP/SQLite/filesystem path: exact-cap
+reuse, atomic publication of MP4 plus quality sidecar, conflicting/shared jobs,
+cancellation retaining completed caps, restart, ranges/HEAD, corrupt/missing
+quality metadata, token-scoped deletion, symlinks, and HLS rendition filtering. Tool
+policy tests verify both MP4 selector branches retain codec/height restrictions
+and that extraction uses the requested cap. The real media-tools suite scales
+local fixture sources to 360/720 and compares reported heights with ffprobe.
+
+Browser integration covers preference precedence/storage failure, invalid links,
+small-screen controls and touch targets. The real quality journey checks that
+changing a dropdown leaves playback alone until preparation, then preserves the
+playhead/settings paused, keeps timestamp links source-aware, and maintains
+independent saved rows for one video. Browser and native-HLS/Safari checks still
+require an environment able to launch the browser; passing Bun tests is not
+rendering or accessibility proof.
 
 ## Production resource owners
 

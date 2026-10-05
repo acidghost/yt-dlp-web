@@ -19,7 +19,7 @@ test("library owns its directory and clock, closes idempotently, and persists ac
     library.watch(id, meta);
     library.progress(id, 4);
 
-    const media = join(dir, "media", id);
+    const media = join(dir, "media", id, "q-720");
 
     await mkdir(media, { recursive: true });
     await writeFile(join(media, "video.mp4"), "fixture");
@@ -115,7 +115,7 @@ test("reset removes only database sidecars; media and legacy files survive a fre
     library.watch(id, meta);
     library.close();
 
-    const media = join(dir, "media", id);
+    const media = join(dir, "media", id, "q-720");
 
     await mkdir(media, { recursive: true });
     await mkdir(join(dir, "tmp"));
@@ -144,7 +144,16 @@ test("reset removes only database sidecars; media and legacy files survive a fre
 
     expect(await library.list()).toEqual([]);
     expect(await library.storage()).toEqual([
-      { id, title: null, channel: null, sizeBytes: 5, modifiedAt: "2026-09-01T12:00:00.000Z" },
+      {
+        variant: "720",
+        requested: null,
+        height: null,
+        id,
+        title: null,
+        channel: null,
+        sizeBytes: 5,
+        modifiedAt: "2026-09-01T12:00:00.000Z",
+      },
     ]);
     expect(await library.list()).toEqual([]);
   } finally {

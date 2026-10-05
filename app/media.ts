@@ -1,7 +1,8 @@
 import { resolve } from "node:path";
-import { InputError } from "./media-errors";
+import { FormatUnavailableError, InputError } from "./media-errors";
 import { runDownload, runExtraction } from "./media-process";
-import type { TransferProgress } from "./protocol";
+import type { Quality, TransferProgress } from "./protocol";
+import { qualityHeight, qualityLabel } from "./quality";
 
 export { DownloadTerminationError, InputError } from "./media-errors";
 
@@ -9,9 +10,11 @@ export type DownloadedVideo = {
   title: string;
   duration: number | null;
   channel: string | null;
+  height?: number | null;
 };
 
 export type DownloadOptions = {
+  quality?: Quality;
   signal: AbortSignal;
   onProgress: (progress: TransferProgress) => void;
 };
@@ -26,10 +29,12 @@ const videoId = /^[a-zA-Z0-9_-]{11}$/;
 
 const youtubeHosts = new Set(["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"]);
 
-// Prefer a browser-playable H.264 video + AAC audio, remuxed without re-encoding.
-// A combined MP4 is the fallback when separate tracks are not available.
-const downloadFormat =
-  "bv[ext=mp4][vcodec^=avc1][height<=720]+ba[ext=m4a][acodec^=mp4a]/b[ext=mp4][vcodec^=avc1][acodec^=mp4a][height<=720]";
+// Prefer H.264 + AAC, remuxed without re-encoding; combined MP4 is the fallback.
+function downloadFormat(quality: Quality): string {
+  const cap = qualityHeight(quality);
+  const height = cap === null ? "" : `[height<=${cap}]`;
+  return `bv[ext=mp4][vcodec^=avc1]${height}+ba[ext=m4a][acodec^=mp4a]/b[ext=mp4][vcodec^=avc1][acodec^=mp4a]${height}`;
+}
 
 // Flags shared by every yt-dlp invocation.
 const commonArgs = [
@@ -111,6 +116,7 @@ function channelName(info: { channel?: unknown; uploader?: unknown }): string | 
 }
 
 export const downloadVideo: Download = async (url, outputPath, options) => {
+  const quality = options?.quality ?? "720";
   const stdout = await runDownload(
     [
       ...commonArgs,
@@ -124,18 +130,26 @@ export const downloadVideo: Download = async (url, outputPath, options) => {
       "--progress-template",
       'postprocess:YTDLP_WEB_PROGRESS:{"phase":"postprocess","progress":%(progress.{status,postprocessor})j}',
       "--format",
-      downloadFormat,
+      downloadFormat(quality),
       "--merge-output-format",
       "mp4",
       "--output",
       outputPath,
       "--print",
-      "after_move:%(.{title,duration,filepath,channel,uploader})#j",
+      "after_move:%(.{title,duration,filepath,channel,uploader,height})#j",
       "--",
       url,
     ],
     options,
-  );
+  ).catch((error) => {
+    if (error instanceof FormatUnavailableError) {
+      const hint = quality === "best" ? "Try Stream (HLS)." : "Try a higher limit or Stream (HLS).";
+      throw new InputError(
+        `No H.264/AAC MP4 formats are available (${qualityLabel(quality)}). ${hint}`,
+      );
+    }
+    throw error;
+  });
 
   if (!stdout.trim()) {
     throw new InputError("Live or unavailable videos are not supported.");
@@ -143,6 +157,7 @@ export const downloadVideo: Download = async (url, outputPath, options) => {
 
   const result = parseJson<{
     filepath?: unknown;
+    height?: unknown;
     title?: unknown;
     duration?: unknown;
     channel?: unknown;
@@ -155,7 +170,15 @@ export const downloadVideo: Download = async (url, outputPath, options) => {
     throw new InputError("yt-dlp did not create the expected MP4 file.");
   }
 
-  return { ...videoMeta(result), channel: channelName(result) };
+  const height =
+    typeof result.height === "number" && Number.isSafeInteger(result.height) && result.height > 0
+      ? result.height
+      : null;
+  const cap = qualityHeight(quality);
+  if (cap !== null && height !== null && height > cap) {
+    throw new InputError("Downloaded video exceeds the requested quality limit.");
+  }
+  return { ...videoMeta(result), channel: channelName(result), height };
 };
 
 export type HlsSource = {
@@ -166,10 +189,11 @@ export type HlsSource = {
   headers: Record<string, string>;
 };
 
-export type ExtractHls = (url: string) => Promise<HlsSource>;
+export type ExtractHls = (url: string, quality?: Quality) => Promise<HlsSource>;
 
 // Print only selected fields: a full yt-dlp JSON dump includes megabytes of captions.
-export const extractHls: ExtractHls = async (url) => {
+export const extractHls: ExtractHls = async (url, quality = "720") => {
+  const cap = qualityHeight(quality);
   const stdout = await runExtraction(
     [...commonArgs, "--print", "%(.{title,duration,channel,uploader,formats})#j", "--", url],
     {
@@ -193,21 +217,22 @@ export const extractHls: ExtractHls = async (url) => {
     }>;
   }>(stdout, "yt-dlp returned invalid HLS metadata.");
 
-  // Best H.264 HLS rendition at or below 720p.
+  // Choose compatible source metadata; ProxySession also caps the actual master.
   const chosen = info.formats
     ?.filter(
       (f) =>
         f.protocol === "m3u8_native" &&
         f.vcodec?.startsWith("avc1") &&
         typeof f.height === "number" &&
-        f.height <= 720 &&
+        Number.isSafeInteger(f.height) &&
+        f.height > 0 &&
+        (cap === null || f.height <= cap) &&
         typeof f.manifest_url === "string",
     )
     .sort((a, b) => (b.height ?? 0) - (a.height ?? 0))[0];
   if (!chosen?.manifest_url) {
-    throw new InputError(
-      "No H.264 HLS playlist is available for this video at or below 720p. Select a download mode instead.",
-    );
+    const hint = quality === "best" ? "Choose Save MP4." : "Try a higher limit or choose Save MP4.";
+    throw new InputError(`No H.264 HLS playlist is available (${qualityLabel(quality)}). ${hint}`);
   }
 
   // Only forward the headers YouTube's CDN actually needs.

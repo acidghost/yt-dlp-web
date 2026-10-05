@@ -14,7 +14,10 @@ const history: HistoryEntry[] = [
     duration: 120,
     lastWatchedAt: "2026-10-03T00:00:00.000Z",
     positionSeconds: 0,
-    mp4: { sizeBytes: 100 },
+    mp4: {
+      sizeBytes: 100,
+      variants: [{ variant: "720", requested: null, height: null, sizeBytes: 100 }],
+    },
   },
   {
     id: "bbbbbbbbbbb",
@@ -24,7 +27,7 @@ const history: HistoryEntry[] = [
     duration: 120,
     lastWatchedAt: "2026-10-01T00:00:00.000Z",
     positionSeconds: 40,
-    mp4: { sizeBytes: null },
+    mp4: { sizeBytes: null, variants: [] },
   },
   {
     id: "ccccccccccc",
@@ -34,7 +37,10 @@ const history: HistoryEntry[] = [
     duration: 120,
     lastWatchedAt: "2026-10-02T00:00:00.000Z",
     positionSeconds: 100,
-    mp4: { sizeBytes: 50 },
+    mp4: {
+      sizeBytes: 50,
+      variants: [{ variant: "720", requested: null, height: null, sizeBytes: 50 }],
+    },
   },
 ];
 const files: StorageFile[] = [
@@ -43,6 +49,9 @@ const files: StorageFile[] = [
     title: "Alpha server",
     channel: "Small Systems",
     sizeBytes: 100,
+    variant: "720",
+    requested: null,
+    height: null,
     modifiedAt: "2026-10-01T00:00:00.000Z",
   },
   {
@@ -50,6 +59,9 @@ const files: StorageFile[] = [
     title: "SQLite WAL",
     channel: null,
     sizeBytes: 50,
+    variant: "720",
+    requested: null,
+    height: null,
     modifiedAt: "2026-10-04T00:00:00.000Z",
   },
   {
@@ -57,6 +69,9 @@ const files: StorageFile[] = [
     title: "Fuzz workshop",
     channel: "Debug Diaries",
     sizeBytes: 500,
+    variant: "720",
+    requested: null,
+    height: null,
     modifiedAt: "2026-10-02T00:00:00.000Z",
   },
   {
@@ -64,6 +79,9 @@ const files: StorageFile[] = [
     title: null,
     channel: null,
     sizeBytes: 200,
+    variant: "720",
+    requested: null,
+    height: null,
     modifiedAt: "2026-10-03T00:00:00.000Z",
   },
 ];
@@ -205,8 +223,12 @@ test("history only shows badges for saved MP4s", async ({ page }) => {
   await library(page);
   await page.goto("/");
 
-  await expect(page.locator('.history-item[data-id="aaaaaaaaaaa"] chip')).toHaveText("MP4 · 100 B");
-  await expect(page.locator('.history-item[data-id="ccccccccccc"] chip')).toHaveText("MP4 · 50 B");
+  await expect(page.locator('.history-item[data-id="aaaaaaaaaaa"] chip')).toHaveText(
+    "MP4 · Quality unknown (720 slot, unverified) · 100 B",
+  );
+  await expect(page.locator('.history-item[data-id="ccccccccccc"] chip')).toHaveText(
+    "MP4 · Quality unknown (720 slot, unverified) · 50 B",
+  );
   const unsaved = page.locator('.history-item[data-id="bbbbbbbbbbb"]');
   await expect(unsaved).toContainText("Parser [WAL]");
   await expect(unsaved.locator("chip")).toHaveCount(0);
@@ -307,6 +329,9 @@ test("chunking follows all filtered results; refresh preserves state and query/t
     title: `Saved clip ${index}`,
     channel: "Library",
     sizeBytes: index + 1,
+    variant: "720" as const,
+    requested: null,
+    height: null,
     modifiedAt: "2026-10-01T00:00:00.000Z",
   }));
   await library(page, [], saved);
@@ -456,7 +481,7 @@ test("file deletion confirms, preserves the query and sorts, updates totals, and
   const deletes: string[] = [];
   await page.route("**/api/history", (route) => route.fulfill({ json: history }));
   await page.route("**/api/storage", (route) => route.fulfill({ json: saved }));
-  await page.route("**/api/history/ddddddddddd/files", (route) => {
+  await page.route("**/api/history/ddddddddddd/files/720", (route) => {
     deletes.push(route.request().method());
     saved = saved.filter((file) => file.id !== "ddddddddddd");
     return route.fulfill({ json: { ok: true } });
@@ -468,7 +493,7 @@ test("file deletion confirms, preserves the query and sorts, updates totals, and
   await page.getByLabel("Search title or channel").fill("fuzz");
 
   const button = page.getByRole("button", {
-    name: "Delete downloaded files for Fuzz workshop",
+    name: "Delete Quality unknown (720 slot, unverified) MP4 for Fuzz workshop",
     exact: true,
   });
   const dismissed = page.waitForEvent("dialog");
@@ -482,7 +507,9 @@ test("file deletion confirms, preserves the query and sorts, updates totals, and
   const confirmed = page.waitForEvent("dialog");
   const deleteClick = button.click();
   const dialog = await confirmed;
-  expect(dialog.message()).toBe('Delete downloaded files for "Fuzz workshop"?');
+  expect(dialog.message()).toBe(
+    'Delete Quality unknown (720 slot, unverified) MP4 for "Fuzz workshop"?',
+  );
   await dialog.accept();
   await deleteClick;
 
@@ -517,7 +544,7 @@ test("a storage read begun before deletion is invalidated before the mutation fi
       await route.fulfill({ json: saved });
     }
   });
-  await page.route("**/api/history/ddddddddddd/files", async (route) => {
+  await page.route("**/api/history/ddddddddddd/files/720", async (route) => {
     deleting = true;
     await heldDelete.promise;
     saved = saved.filter((file) => file.id !== "ddddddddddd");
@@ -532,7 +559,10 @@ test("a storage read begun before deletion is invalidated before the mutation fi
 
     const confirmation = page.waitForEvent("dialog");
     const clicking = page
-      .getByRole("button", { name: "Delete downloaded files for Fuzz workshop", exact: true })
+      .getByRole("button", {
+        name: "Delete Quality unknown (720 slot, unverified) MP4 for Fuzz workshop",
+        exact: true,
+      })
       .click();
     await (await confirmation).accept();
     await clicking;
@@ -562,7 +592,7 @@ test("search, sort, tabs, refresh and search-field shortcuts preserve the native
   page,
 }) => {
   const id = "libplay0001";
-  const mediaDir = join(import.meta.dirname, "../tmp/e2e-data/media", id);
+  const mediaDir = join(import.meta.dirname, "../tmp/e2e-data/media", id, "q-720");
   await mkdir(mediaDir, { recursive: true });
   await copyFile(join(import.meta.dirname, "fixtures/player.mp4"), join(mediaDir, "video.mp4"));
   await library(page);
@@ -577,7 +607,9 @@ test("search, sort, tabs, refresh and search-field shortcuts preserve the native
         channel: null,
         duration: 12,
         positionSeconds: 0,
-        stream: `/api/stream/${id}`,
+        stream: `/api/stream/${id}/720`,
+        variant: "720",
+        quality: { requested: null, height: null },
       },
     }),
   );
@@ -619,7 +651,7 @@ test("search, sort, tabs, refresh and search-field shortcuts preserve the native
   expect(
     await page.evaluate((original) => document.querySelector("video") === original, original),
   ).toBe(true);
-  await expect(player).toHaveAttribute("src", `/api/stream/${id}`);
+  await expect(player).toHaveAttribute("src", `/api/stream/${id}/720`);
   expect(await player.evaluate((video: HTMLVideoElement) => video.currentTime)).toBeCloseTo(4, 1);
   expect(await player.evaluate((video: HTMLVideoElement) => video.paused)).toBe(true);
   expect(await page.evaluate(() => document.fullscreenElement)).toBeNull();

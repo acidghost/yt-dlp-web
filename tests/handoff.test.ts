@@ -134,3 +134,37 @@ test("invalid timestamps are ignored without weakening URL or mode validation", 
     error: "Unknown playback mode.",
   });
 });
+
+test.each(["360", "480", "720", "1080", "best"] as const)(
+  "quality %s round trips with timestamp and mode",
+  (quality) => {
+    const search = handoffSearch(url, "mp4", 8, { quality });
+    expect(parseHandoff(`?${search}`)).toEqual({ url, mode: "mp4", startSeconds: 8, quality });
+  },
+);
+
+test.each(["", "bogus", "1440", "2160", "720p", "../360"])(
+  "invalid explicit quality %j is rejected",
+  (quality) => {
+    expect(
+      parseHandoff(`?url=${encodeURIComponent(url)}&quality=${encodeURIComponent(quality)}`),
+    ).toEqual({ error: "Unknown video quality." });
+  },
+);
+
+test("unknown-quality saved file links round trip without pretending to apply a cap", () => {
+  const search = handoffSearch(url, "mp4", 0, { savedVariant: "360" });
+  expect(parseHandoff(`?${search}`)).toEqual({
+    url,
+    mode: "mp4",
+    startSeconds: 0,
+    savedVariant: "360",
+  });
+  expect(
+    parseHandoff(`?url=${encodeURIComponent(url)}&quality=360&mode=mp4&savedVariant=720`),
+  ).toEqual({ error: "Invalid saved MP4 selection." });
+  expect(parseHandoff(`?url=${encodeURIComponent(url)}&savedVariant=360`)).toEqual({
+    error: "Invalid saved MP4 selection.",
+  });
+  expect(parseHandoff("?quality=360")).toEqual({ error: "Add a video URL to the link." });
+});

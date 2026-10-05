@@ -1,4 +1,5 @@
 import { expect, mock, spyOn, test } from "bun:test";
+import * as fs from "node:fs/promises";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -132,24 +133,16 @@ test("close survives the native file-check await without admitting a late downlo
     duration: 10,
   }));
   const base = fixture.start({ download });
-  const realFile = Bun.file.bind(Bun);
-  const files = spyOn(Bun, "file").mockImplementation(((...args: Parameters<typeof Bun.file>) => {
-    const file = realFile(...args);
-    if (String(args[0]).endsWith("/abcdefghijk/video.mp4")) {
-      const exists = file.exists.bind(file);
-
-      Object.defineProperty(file, "exists", {
-        value: async () => {
-          started.release();
-          await release.promise;
-
-          return exists();
-        },
-      });
+  const realStat = fs.lstat;
+  const files = spyOn(fs, "lstat").mockImplementation((async (
+    ...args: Parameters<typeof fs.lstat>
+  ) => {
+    if (String(args[0]).endsWith("/media/abcdefghijk")) {
+      started.release();
+      await release.promise;
     }
-
-    return file;
-  }) as typeof Bun.file);
+    return realStat(...args);
+  }) as typeof fs.lstat);
   const response = requestResolve(base);
 
   try {

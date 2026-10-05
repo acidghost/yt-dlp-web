@@ -2,7 +2,8 @@
 
 Synthetic 12-second video and tone, generated with ffmpeg (no upstream content).
 The MP4 playback test copies `player.mp4` into the test server's
-`tmp/e2e-data/media/abcdefghijk/video.mp4` and uses the real `/api/stream` endpoint,
+`tmp/e2e-data/media/abcdefghijk/q-720/video.mp4` and uses the real
+`/api/stream/abcdefghijk/720` endpoint,
 including its byte-range responses. Focused browser-integration HLS fixtures use same-origin Playwright
 routes. Real-backend journeys use `proxy/`: a compatible master and separate
 video/audio playlists and segments passed through the actual proxy. No YouTube or other external media is used. `.mpegts` is MPEG-TS, named

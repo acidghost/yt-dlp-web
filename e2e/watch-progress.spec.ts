@@ -16,14 +16,19 @@ const entry = {
   duration: 120,
   lastWatchedAt: "2026-09-27T10:00:00.000Z",
   positionSeconds: 90,
-  mp4: { sizeBytes: 10 },
+  mp4: {
+    sizeBytes: 10,
+    variants: [{ variant: "720" as const, requested: null, height: null, sizeBytes: 10 }],
+  },
 };
 
 const video = {
   ...entry,
   kind: "download",
   token: "session-token",
-  stream: `/api/stream/${entry.id}`,
+  stream: `/api/stream/${entry.id}/720`,
+  variant: "720" as const,
+  quality: { requested: null, height: null },
 };
 
 test("history derives watched status and resets it without preparing or deleting files", async ({
@@ -180,7 +185,7 @@ for (const action of ["reset", "mark"] as const) {
 async function serveMedia(page: Page): Promise<void> {
   // Use the real MP4 endpoint: route.fulfill(path) ignores Range requests,
   // which lets Chromium read metadata but prevents reliable native seeking.
-  const mediaDir = join(import.meta.dirname, "../tmp/e2e-data/media", entry.id);
+  const mediaDir = join(import.meta.dirname, "../tmp/e2e-data/media", entry.id, "q-720");
 
   await mkdir(mediaDir, { recursive: true });
   await copyFile(join(import.meta.dirname, "fixtures/player.mp4"), join(mediaDir, "video.mp4"));
@@ -213,7 +218,13 @@ for (const mode of ["mp4", "proxy"] as const) {
       route.fulfill({
         json: {
           ...video,
-          ...(mode === "proxy" ? { kind: "proxy", hls: "/fixture-media/player.m3u8" } : {}),
+          ...(mode === "proxy"
+            ? {
+                kind: "proxy",
+                quality: { requested: "720", availableHeights: [90] },
+                hls: "/fixture-media/player.m3u8",
+              }
+            : {}),
         },
       }),
     );
@@ -432,7 +443,7 @@ for (const filesOnly of [true, false]) {
       expect(route.request().method()).toBe("DELETE");
 
       deletes.push(new URL(route.request().url()).pathname);
-      rows = filesOnly ? [{ ...entry, mp4: { sizeBytes: null } }] : [];
+      rows = filesOnly ? [{ ...entry, mp4: { sizeBytes: null, variants: [] } }] : [];
 
       return route.fulfill({ json: { ok: true } });
     });

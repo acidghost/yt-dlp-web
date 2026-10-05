@@ -39,22 +39,52 @@ assets are embedded; yt-dlp, ffmpeg, and Deno are still runtime requirements.
 
 ### Choose a mode
 
-| Mode                            | How it plays                                                           | Media on disk |
-| ------------------------------- | ---------------------------------------------------------------------- | ------------- |
-| **Proxy YouTube HLS** (default) | Stream playlists and segments through Bun to hls.js; no full download. | None          |
-| **Download + Native MP4**       | Download and merge once, then reuse on later plays.                    | Reusable MP4  |
+| Mode                       | How it plays                                                        | Media on disk |
+| -------------------------- | ------------------------------------------------------------------- | ------------- |
+| **Stream (HLS)** (default) | Proxy YouTube playlists and segments through Bun; no full download. | None          |
+| **Save MP4**               | Download and merge once, then reuse the selected quality slot.      | Reusable MP4s |
 
-Both modes select **H.264/AAC up to 720p**. Proxy mode requires a compatible
+Both modes retain **H.264/AAC** compatibility. Streaming requires a compatible
 YouTube HLS master playlist with separate audio/video tracks and prefers the
-original audio rendition. If none is available, use **Download + Native MP4**.
+original audio rendition. If none is available, choose **Save MP4**.
 
 The proxy exposes only same-origin, opaque media links. Signed upstream URLs
 stay server-side, and only HTTPS `*.googlevideo.com` media links are accepted.
 All watched bytes pass through Bun: **proxy playback uses local bandwidth**,
 even though it writes no media files.
 
-Changing modes prepares the selected source **without autoplay**. Switching to
-proxy extracts fresh signed URLs; switching to MP4 reuses an existing download.
+Mode and quality selections apply only with **Prepare video**, without autoplay.
+Preparing streaming extracts fresh signed URLs; preparing MP4 reuses the
+requested quality slot when available.
+
+### Choose a quality
+
+**Max quality** offers **up to 360p, 480p, 720p, 1080p**, and **Best
+compatible**. The default is 720p. Changing this dropdown only changes the
+next-preparation choice: it does not interrupt playback or start a download.
+Select **Prepare video** to apply it. The browser remembers your choice when
+storage is available; an explicit app-link quality overrides that preference.
+
+A cap is not an exact-resolution promise. Streaming adapts among compatible
+renditions below the cap; the current rendition is shown with hls.js. Native HLS
+shows the cap without claiming an actual resolution. An MP4 has one fixed
+quality, shown separately from its requested cap. Lower compatible sources are
+allowed; no compatible source below the cap produces an actionable error, never
+an automatic increase. Best compatible removes the height ceiling, not the codec
+restrictions; it can use substantially more bandwidth and disk and does not
+guarantee 4K, HDR, or any specific resolution.
+
+Repreparing the same, unchanged video URL with a new cap preserves the current
+playhead, playback rate, volume, and mute, then stays paused (including mode
+changes). A changed URL keeps ordinary timestamp/resume behavior. Quality is
+locked while preparation is busy.
+
+MP4s use **separate files per requested cap**. A 360p request never reuses a
+720/1080 slot; two caps may produce the same actual resolution and still keep
+separate files. Best compatible on a cache hit means the source selected at
+download time, not a new check of YouTube. Delete a saved file explicitly to
+redownload it. Older MP4s remain playable from **Saved MP4s**, labeled **Quality
+unknown**; they are never silently assumed to honor a new cap.
 
 ### Download progress and cancellation
 
@@ -70,9 +100,11 @@ unfinished staging files. The UI stays busy until cleanup is confirmed.
 Completed MP4s, watch history, and resume positions are not deleted. The brief
 **Saving MP4** commit phase cannot be canceled.
 
-- Requests for the same video share one download. **Cancellation is global for
-  that video:** canceling in one tab stops preparation in all tabs sharing it,
-  but does not stop downloads of other videos.
+- Requests for the same video and cap share one download. Another cap for that
+  video returns a conflict: wait or cancel before preparing it. An already-saved
+  slot can still play while another cap is downloading. **Cancellation is global
+  for that video's active preparation:** canceling in one tab stops all tabs
+  sharing it, but keeps completed qualities and other videos' downloads.
 - If process termination cannot be confirmed, staging and the busy ID/slot are
   retained rather than risking a live writer. Stop those processes before
   restarting the server; the error never claims cleanup succeeded.
@@ -125,8 +157,9 @@ page outside focused sliders and menus.
 ### Bookmark and share
 
 **Copy timestamp link** copies an app link at the current playback time and
-preserves the mode. If clipboard access is blocked, select and copy the
-displayed link manually.
+preserves the playing source's mode and requested cap, not a pending dropdown
+choice. Unknown-quality files use explicit saved-file links. If clipboard access
+is blocked, select and copy the displayed link manually.
 
 You can also bookmark an app URL to prepare a video **without autoplay**:
 
@@ -136,19 +169,22 @@ http://127.0.0.1:3000/?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dabcdefghi
 
 Replace `abcdefghijk` with a real public video ID.
 
-| App URL parameter       | Effect                                              |
-| ----------------------- | --------------------------------------------------- |
-| `url`                   | The URL-encoded YouTube URL to prepare              |
-| `mode=mp4`              | Prepare a download instead of the default proxy HLS |
-| `t=83`                  | Seek to 1:23, overriding saved watch progress       |
-| `t=0`                   | Start from the beginning                            |
-| `start=83` or `t=1m23s` | Alternative timestamp formats                       |
+| App URL parameter       | Effect                                                                                         |
+| ----------------------- | ---------------------------------------------------------------------------------------------- |
+| `url`                   | The URL-encoded YouTube URL to prepare                                                         |
+| `mode=mp4`              | Prepare a download instead of the default proxy HLS                                            |
+| `quality=360`           | Choose a cap: `360`, `480`, `720`, `1080`, or `best`                                           |
+| `savedVariant=720`      | Play that exact saved cap slot (MP4 mode only); accepts `360`, `480`, `720`, `1080`, or `best` |
+| `t=83`                  | Seek to 1:23, overriding saved watch progress                                                  |
+| `t=0`                   | Start from the beginning                                                                       |
+| `start=83` or `t=1m23s` | Alternative timestamp formats                                                                  |
 
 Timestamps inside the YouTube URL also work. The **app link's timestamp takes
 precedence** over the YouTube URL's timestamp. Invalid timestamps are ignored;
 times beyond the duration seek to the end. Without a valid timestamp, normal
-resume behavior applies. An unknown mode is rejected without contacting the
-server.
+resume behavior applies. An unknown mode or explicit quality is rejected without
+contacting the server. A saved-file link never silently starts a new download if
+the file is missing. It cannot specify a conflicting quality.
 
 ### Proxy session limits
 
@@ -158,13 +194,16 @@ server.
   again” message. Expired sessions are evicted to free capacity without a
   restart.
 - Restarting the server invalidates proxy sessions. Downloaded media links use
-  stable video IDs and survive restarts.
+  stable video IDs and quality slots and survive restarts.
 
 ## History and storage
 
 Watch history is recorded **when playback actually starts**, not when a URL is
-resolved. History **Play** uses the downloaded MP4 when available; otherwise it
-prepares a fresh proxy session.
+resolved. History **Play** prefers the saved 720 slot, then the highest known
+saved height, then an unverified quality slot if it is the only file. Otherwise
+it prepares a fresh streaming session using the selected cap. **Saved MP4s
+Play** always plays that exact file, independent of your next-preparation
+preference.
 
 ### Search and manage your library
 
@@ -178,8 +217,10 @@ The **Library** below the player has two local views:
   lengths; **Most recent** orders the MP4's filesystem modification time, shown
   as **Modified**. It is not a guaranteed download date: yt-dlp and file
   restores may preserve older timestamps. Size bars compare to the largest saved
-  file, not the disk's capacity. File rows offer **Play** and **Delete files**;
-  watched/reset and full-history deletion stay in Watch history.
+  file, not the disk's capacity. Each physical quality slot has its own row,
+  quality label, **Play**, and **Delete this MP4**; deleting one keeps the other
+  qualities. Watched/reset and all-file/full-history deletion stay in Watch
+  history, which remains one row per video.
 
 Search is a trimmed, case-insensitive, literal title **or** channel substring.
 It searches the complete active list before sorting and revealing 12 rows at a
@@ -192,8 +233,9 @@ playback or autoplays a video.
 **Saved MP4s: …** always totals the entire inventory, independent of search and
 Show more. A separate subtotal covers all matching results, not only visible
 rows. Sizes use binary units (KiB, MiB, GiB). Accounting covers only nonempty,
-regular published `DATA_DIR/media/<id>/video.mp4` file lengths; it excludes
-symlinks, staging/partial downloads, sidecars, SQLite, legacy `tmp` files,
+regular published `DATA_DIR/media/<id>/q-<cap>/video.mp4` file lengths; it
+excludes old-layout `DATA_DIR/media/<id>/video.mp4` files, symlinked
+files/directories, staging/partial downloads, sidecars, SQLite, old `tmp` files,
 filesystem overhead, and free-space/capacity telemetry. Listing does not create
 history or download metadata; files without cached metadata remain playable and
 removable by ID.
@@ -204,8 +246,10 @@ in another tab; there is no background polling of the inventory. History and
 storage are independent snapshots, so concurrent changes may appear on the next
 refresh. A failed storage read shows **Storage unavailable**, or retains the
 last good inventory with an explicit stale warning—never a false zero.
-`GET /api/storage` exposes ID, nullable title/channel, size bytes, and the MP4
-modification timestamp under the same Host/Origin guards as other reads.
+`GET /api/storage` exposes ID, variant, requested cap and actual height
+(nullable), nullable title/channel, size bytes, and the MP4 modification
+timestamp under the same Host/Origin guards as other reads. History MP4 bytes
+sum all its variants.
 
 ### Resume and watched status
 
@@ -225,14 +269,20 @@ Preparing a video again seeks to that position after metadata loads.
 
 ### What is saved
 
-| Path                                  | Contents                                             |
-| ------------------------------------- | ---------------------------------------------------- |
-| `DATA_DIR/library.sqlite`             | Watch history, resume positions, and cached metadata |
-| `DATA_DIR/media/<video-id>/video.mp4` | Reusable MP4 downloads                               |
+| Path                                             | Contents                                                      |
+| ------------------------------------------------ | ------------------------------------------------------------- |
+| `DATA_DIR/library.sqlite`                        | Watch history, resume positions, and cached metadata          |
+| `DATA_DIR/media/<video-id>/q-<cap>/video.mp4`    | MP4 for a requested cap (`360`, `480`, `720`, `1080`, `best`) |
+| `DATA_DIR/media/<video-id>/q-<cap>/quality.json` | Versioned requested-cap and actual-height metadata            |
 
-`DATA_DIR` defaults to `./data`. Downloads are staged under the video's media
-directory and reused across requests and restarts. Unfinished staged downloads
-are cleaned up on startup.
+`DATA_DIR` defaults to `./data`. Media and quality metadata are staged together
+under the video's directory, then the whole directory is atomically published.
+Completed slots are not overwritten by requests for a different cap. Unfinished
+staging is cleaned up on startup. No SQLite schema change or reset is required.
+Missing/invalid quality sidecars leave a file visible and explicitly playable,
+but implicit reuse is refused: delete that file and prepare the cap again.
+Database resets retain media and its quality sidecars. Old-layout
+`media/<video-id>/video.mp4` files are ignored, not migrated or served.
 
 History shows resume times for unfinished videos, the original YouTube link,
 channel (when supplied by yt-dlp), duration, watch time, and MP4 file sizes.
@@ -246,12 +296,13 @@ git-ignored.
 
 ### Delete and back up
 
-Both deletion choices require confirmation in the UI:
+All deletion choices require confirmation in the UI:
 
-| Action                       | Removes                            | Keeps         |
-| ---------------------------- | ---------------------------------- | ------------- |
-| **Delete files**             | Downloaded media                   | Watch history |
-| **Delete files and history** | Downloaded media and watch history | —             |
+| Action                       | Removes                                   | Keeps                             |
+| ---------------------------- | ----------------------------------------- | --------------------------------- |
+| **Delete this MP4**          | The selected quality file and its sidecar | Other qualities and watch history |
+| **Delete files**             | All downloaded qualities for the video    | Watch history                     |
+| **Delete files and history** | Downloaded media and watch history        | —                                 |
 
 > [!WARNING] Back up `DATA_DIR/library.sqlite` and `DATA_DIR/media/` together
 > while the server is stopped, or use a consistent SQLite backup/snapshot. Do

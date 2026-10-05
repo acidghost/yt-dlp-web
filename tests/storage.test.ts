@@ -4,7 +4,7 @@ import { mkdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { StorageListSchema } from "../app/protocol";
 import { appFixture } from "./support/app";
-import { history, progress, proxyResolve, resolveVideo, watched } from "./support/http";
+import { history, prepared, progress, proxyResolve, resolveVideo, watched } from "./support/http";
 
 async function storage(base: string) {
   const response = await fetch(`${base}/api/storage`);
@@ -17,7 +17,7 @@ async function storage(base: string) {
 const modifiedAt = "2026-09-01T12:00:00.000Z";
 
 async function saveFile(dataDir: string, id: string, bytes: string) {
-  const dir = join(dataDir, "media", id);
+  const dir = join(dataDir, "media", id, "q-720");
   const path = join(dir, "video.mp4");
 
   await mkdir(dir, { recursive: true });
@@ -31,7 +31,7 @@ test("storage includes completed unplayed downloads without creating watch histo
   await using fixture = await appFixture();
   const base = fixture.start();
   const video = await resolveVideo(base);
-  const path = join(fixture.dataDir, "media", video.id, "video.mp4");
+  const path = join(fixture.dataDir, "media", video.id, "q-720", "video.mp4");
 
   await utimes(path, new Date(modifiedAt), new Date(modifiedAt));
 
@@ -41,7 +41,16 @@ test("storage includes completed unplayed downloads without creating watch histo
   expect(response.headers.get("cache-control")).toBe("no-store");
   expect(response.headers.get("access-control-allow-origin")).toBeNull();
   expect(await response.json()).toEqual([
-    { id: video.id, title: "Fixture", channel: "Fixture channel", sizeBytes: 10, modifiedAt },
+    {
+      variant: "720",
+      requested: "720",
+      height: null,
+      id: video.id,
+      title: "Fixture",
+      channel: "Fixture channel",
+      sizeBytes: 10,
+      modifiedAt,
+    },
   ]);
   expect(await history(base)).toEqual([]);
 });
@@ -50,7 +59,7 @@ test("watching and editing progress do not change file dates; files-only deletio
   await using fixture = await appFixture();
   const base = fixture.start({ proxy: true });
   const video = await resolveVideo(base);
-  const path = join(fixture.dataDir, "media", video.id, "video.mp4");
+  const path = join(fixture.dataDir, "media", video.id, "q-720", "video.mp4");
 
   await utimes(path, new Date(modifiedAt), new Date(modifiedAt));
 
@@ -66,7 +75,16 @@ test("watching and editing progress do not change file dates; files-only deletio
   await watched(base, proxy.id, proxy.token);
 
   expect(await storage(base)).toEqual([
-    { id: video.id, title: "Proxy fixture", channel: "Proxy channel", sizeBytes: 10, modifiedAt },
+    {
+      variant: "720",
+      requested: "720",
+      height: null,
+      id: video.id,
+      title: "Proxy fixture",
+      channel: "Proxy channel",
+      sizeBytes: 10,
+      modifiedAt,
+    },
   ]);
   expect((await fetch(`${base}/api/history/${video.id}/files`, { method: "DELETE" })).status).toBe(
     200,
@@ -83,7 +101,18 @@ test("storage returns retained metadata-free files and current sizes/mtimes acro
   await using fixture = await appFixture();
   const base = fixture.start();
   const path = await saveFile(fixture.dataDir, "aaaaaaaaaaa", "saved");
-  const first = [{ id: "aaaaaaaaaaa", title: null, channel: null, sizeBytes: 5, modifiedAt }];
+  const first = [
+    {
+      variant: "720" as const,
+      requested: null,
+      height: null,
+      id: "aaaaaaaaaaa",
+      title: null,
+      channel: null,
+      sizeBytes: 5,
+      modifiedAt,
+    },
+  ];
 
   expect(await storage(base)).toEqual(first);
   expect(await history(base)).toEqual([]);
@@ -98,7 +127,16 @@ test("storage returns retained metadata-free files and current sizes/mtimes acro
   await utimes(path, new Date(newer), new Date(newer));
 
   expect(await storage(restarted)).toEqual([
-    { id: "aaaaaaaaaaa", title: null, channel: null, sizeBytes: 11, modifiedAt: newer },
+    {
+      variant: "720" as const,
+      requested: null,
+      height: null,
+      id: "aaaaaaaaaaa",
+      title: null,
+      channel: null,
+      sizeBytes: 11,
+      modifiedAt: newer,
+    },
   ]);
 
   await rm(path);
@@ -115,13 +153,36 @@ test("a metadata-free retained file replays without downloading and deletes with
   });
   await saveFile(fixture.dataDir, "aaaaaaaaaaa", "saved");
 
-  const replay = await resolveVideo(base, "https://www.youtube.com/watch?v=aaaaaaaaaaa");
+  const replay = await prepared(
+    base,
+    await fetch(`${base}/api/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+        mode: "mp4",
+        savedVariant: "720",
+      }),
+    }),
+  );
+  if (replay.kind !== "download") {
+    throw new Error("Expected saved MP4 playback");
+  }
 
   expect(replay).toMatchObject({ id: "aaaaaaaaaaa", kind: "download", positionSeconds: 0 });
   expect(await (await fetch(`${base}${replay.stream}`)).text()).toBe("saved");
   expect(await history(base)).toEqual([]);
   expect(await storage(base)).toEqual([
-    { id: "aaaaaaaaaaa", title: null, channel: null, sizeBytes: 5, modifiedAt },
+    {
+      variant: "720" as const,
+      requested: null,
+      height: null,
+      id: "aaaaaaaaaaa",
+      title: null,
+      channel: null,
+      sizeBytes: 5,
+      modifiedAt,
+    },
   ]);
 
   const response = await fetch(`${base}/api/history/aaaaaaaaaaa/files`, { method: "DELETE" });
@@ -159,14 +220,23 @@ test("inventory excludes zero bytes, staging, invalid IDs, sidecars, legacy file
   await writeFile(join(media, "aaaaaaaaaaa", "info.json"), "sidecar");
   await writeFile(join(media, "ddddddddddd"), "not a directory");
   await symlink(join(media, "aaaaaaaaaaa"), join(media, "eeeeeeeeeee"));
-  await mkdir(join(media, "fffffffffff"));
-  await symlink(saved, join(media, "fffffffffff", "video.mp4"));
-  await mkdir(join(media, "ggggggggggg", "video.mp4"), { recursive: true });
+  await mkdir(join(media, "fffffffffff", "q-720"), { recursive: true });
+  await symlink(saved, join(media, "fffffffffff", "q-720", "video.mp4"));
+  await mkdir(join(media, "ggggggggggg", "q-720", "video.mp4"), { recursive: true });
   await mkdir(join(fixture.dataDir, "tmp"));
   await writeFile(join(fixture.dataDir, "tmp", "legacy.mp4"), "legacy");
 
   expect(await storage(base)).toEqual([
-    { id: "aaaaaaaaaaa", title: null, channel: null, sizeBytes: 5, modifiedAt },
+    {
+      variant: "720" as const,
+      requested: null,
+      height: null,
+      id: "aaaaaaaaaaa",
+      title: null,
+      channel: null,
+      sizeBytes: 5,
+      modifiedAt,
+    },
   ]);
 });
 
@@ -178,8 +248,26 @@ test("inventory order is deterministic by ID, not size or modification date", as
   await saveFile(fixture.dataDir, "aaaaaaaaaaa", "a");
 
   expect(await storage(base)).toEqual([
-    { id: "aaaaaaaaaaa", title: null, channel: null, sizeBytes: 1, modifiedAt },
-    { id: "bbbbbbbbbbb", title: null, channel: null, sizeBytes: 5, modifiedAt },
+    {
+      variant: "720" as const,
+      requested: null,
+      height: null,
+      id: "aaaaaaaaaaa",
+      title: null,
+      channel: null,
+      sizeBytes: 1,
+      modifiedAt,
+    },
+    {
+      variant: "720" as const,
+      requested: null,
+      height: null,
+      id: "bbbbbbbbbbb",
+      title: null,
+      channel: null,
+      sizeBytes: 5,
+      modifiedAt,
+    },
   ]);
 });
 
@@ -200,7 +288,16 @@ test("an ENOENT scan race omits the disappeared file without failing the invento
   }
 
   expect(await storage(base)).toEqual([
-    { id: "aaaaaaaaaaa", title: null, channel: null, sizeBytes: 5, modifiedAt },
+    {
+      variant: "720" as const,
+      requested: null,
+      height: null,
+      id: "aaaaaaaaaaa",
+      title: null,
+      channel: null,
+      sizeBytes: 5,
+      modifiedAt,
+    },
   ]);
 });
 

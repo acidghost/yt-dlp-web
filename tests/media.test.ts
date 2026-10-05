@@ -89,6 +89,7 @@ test("real download accepts absolute after_move path, normalizes metadata, and s
     title: "Fixture",
     duration: 10,
     channel: "Channel",
+    height: null,
   });
 
   const args = [...command];
@@ -115,11 +116,11 @@ test("real download accepts absolute after_move path, normalizes metadata, and s
 for (const [value, expected] of [
   [
     { channel: " ", uploader: "Uploader" },
-    { title: "Fixture", duration: 10, channel: "Uploader" },
+    { title: "Fixture", duration: 10, channel: "Uploader", height: null },
   ],
   [
     { channel: null, title: null, duration: "10" },
-    { title: "Untitled video", duration: null, channel: null },
+    { title: "Untitled video", duration: null, channel: null, height: null },
   ],
 ] as const) {
   test(`normalizes tool metadata through downloadVideo: ${JSON.stringify(value)}`, async () => {
@@ -455,3 +456,93 @@ for (const mode of ["download", "extraction"] as const) {
     }
   });
 }
+
+test.each(["360", "480", "720", "1080", "best"] as const)(
+  "MP4 %s policy constrains both format branches, keeps codecs, and reports actual height",
+  async (quality) => {
+    const result = observe(
+      downloadVideo(url, output, {
+        quality,
+        signal: new AbortController().signal,
+        onProgress: () => {},
+      }),
+    );
+    proc.emitStdout(metadata({ height: 360 }));
+    proc.exit();
+
+    expect(await result).toMatchObject({ height: 360 });
+    const selector = command[command.indexOf("--format") + 1];
+    expect(selector).toBe(
+      quality === "best"
+        ? "bv[ext=mp4][vcodec^=avc1]+ba[ext=m4a][acodec^=mp4a]/b[ext=mp4][vcodec^=avc1][acodec^=mp4a]"
+        : `bv[ext=mp4][vcodec^=avc1][height<=${quality}]+ba[ext=m4a][acodec^=mp4a]/b[ext=mp4][vcodec^=avc1][acodec^=mp4a][height<=${quality}]`,
+    );
+    expect(command[command.indexOf("--print") + 1]).toContain("height");
+  },
+);
+
+test("tool metadata cannot publish a known height above the requested cap", async () => {
+  const result = observe(
+    downloadVideo(url, output, {
+      quality: "360",
+      signal: new AbortController().signal,
+      onProgress: () => {},
+    }),
+  );
+  proc.emitStdout(metadata({ height: 480 }));
+  proc.exit();
+  await expect(result).rejects.toThrow("exceeds the requested quality limit");
+});
+
+test.each([0, -1, 360.5, 1e20, "360"])(
+  "invalid actual height %j is unknown, not a requested-quality claim",
+  async (height) => {
+    const result = run();
+    proc.emitStdout(metadata({ height }));
+    proc.exit();
+    expect(await result).toMatchObject({ height: null });
+  },
+);
+
+test.each(["360", "1080", "best"] as const)(
+  "HLS extraction selects a compatible source for %s",
+  async (quality) => {
+    const result = observe(extractHls(url, quality));
+    proc.emitStdout(
+      JSON.stringify({
+        formats: [
+          {
+            protocol: "m3u8_native",
+            vcodec: "avc1",
+            height: 360,
+            manifest_url: "https://manifest.googlevideo.com/360.m3u8",
+          },
+          {
+            protocol: "m3u8_native",
+            vcodec: "avc1",
+            height: 1080,
+            manifest_url: "https://manifest.googlevideo.com/1080.m3u8",
+          },
+          { protocol: "m3u8_native", vcodec: "vp9", height: 2160, manifest_url: "wrong" },
+        ],
+      }),
+    );
+    proc.exit();
+    expect(await result).toMatchObject({
+      manifest: `https://manifest.googlevideo.com/${quality === "360" ? "360" : "1080"}.m3u8`,
+    });
+  },
+);
+
+test("unavailable MP4 format error names the chosen cap rather than hard-coded 720p", async () => {
+  const result = observe(
+    downloadVideo(url, output, {
+      quality: "360",
+      signal: new AbortController().signal,
+      onProgress: () => {},
+    }),
+  );
+  proc.emitStderr("Requested format is not available");
+  proc.exit(1);
+  await expect(result).rejects.toThrow("Up to 360p");
+});

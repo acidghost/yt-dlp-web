@@ -23,10 +23,10 @@ test("downloads a private MP4 file before returning a local stream link", async 
 
   expect(data.kind).toBe("download");
   expect(data.title).toBe("Fixture");
-  expect(data.stream).toBe("/api/stream/abcdefghijk");
+  expect(data.stream).toBe("/api/stream/abcdefghijk/720");
   expect(JSON.stringify(data)).not.toContain(fixture.dir);
 
-  const file = Bun.file(join(fixture.dataDir, "media", data.id, "video.mp4"));
+  const file = Bun.file(join(fixture.dataDir, "media", data.id, "q-720", "video.mp4"));
 
   expect(await file.text()).toBe("abcdefghij");
   expect((await requestResolve(base, "https://youtube.com.evil/watch?v=abcdefghijk")).status).toBe(
@@ -55,7 +55,9 @@ test("proxies a nested HLS master, audio, map and ranged segments without downlo
   expect("stream" in data).toBe(false);
   expect(data.hls).toMatch(/^\/api\/proxy\/[\da-f-]+\/0$/);
   expect(download).not.toHaveBeenCalled();
-  expect(await Bun.file(join(fixture.dataDir, "media", data.id, "video.mp4")).exists()).toBe(false);
+  expect(
+    await Bun.file(join(fixture.dataDir, "media", data.id, "q-720", "video.mp4")).exists(),
+  ).toBe(false);
 
   const master = await (await fetch(`${base}${data.hls}`)).text();
 
@@ -128,8 +130,10 @@ test("bundles the player and its assets", async () => {
   // Registration code must ship, not just custom-element tags in Lit templates.
   expect(client).toMatch(/customElements\.define\(\s*["']media-controller["']/);
   expect(client).toMatch(/customElements\.define\(\s*["']media-playback-rate-menu["']/);
-  expect(client).toContain("Proxy YouTube HLS");
-  expect(client).toContain("Download + Native MP4");
+  expect(client).toContain("Stream (HLS)");
+  expect(client).toContain("Save MP4");
+  expect(client).toContain("Max quality");
+  expect(client).toContain("Best compatible");
   expect(client).toContain("Delete files and history");
   expect(client).toContain("Delete files");
   expect(client).toContain("Prepare video");
@@ -238,7 +242,7 @@ test("downloads reuse stable media across requests and restart; ranges and HEAD 
 
   expect((await requestResolve(base)).status).toBe(200);
   expect(downloads).toBe(1);
-  expect(first.stream).toBe("/api/stream/abcdefghijk");
+  expect(first.stream).toBe("/api/stream/abcdefghijk/720");
 
   const restarted = await fixture.restart({ download });
   const replay = await resolve(restarted);
@@ -272,7 +276,7 @@ test("failed downloads remove staging, and startup clears abandoned staging with
 
   const mediaDir = join(fixture.dataDir, "media", "abcdefghijk");
 
-  expect(await Bun.file(join(mediaDir, "video.mp4")).exists()).toBe(false);
+  expect(await Bun.file(join(mediaDir, "q-720", "video.mp4")).exists()).toBe(false);
   expect((await readdir(mediaDir)).some((name) => name.startsWith(".staging-"))).toBe(false);
 
   const abandoned = `.staging-${crypto.randomUUID()}`;

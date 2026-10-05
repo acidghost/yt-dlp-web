@@ -1,10 +1,36 @@
-import type { HistoryEntry, StorageFile } from "../protocol";
+import {
+  type HistoryEntry,
+  type SavedFile,
+  SavedVariantSchema,
+  type StorageFile,
+} from "../protocol";
+import { qualityLabel } from "../quality";
 
 export type HistorySort = "recent" | "oldest";
 export type FilesSort = "largest" | "most-recent";
 
 export function savedTitle(file: StorageFile): string {
   return file.title ?? `Saved video (${file.id})`;
+}
+
+export function savedQualityLabel(
+  file: Pick<SavedFile, "variant" | "requested" | "height">,
+): string {
+  const actual = file.height === null ? "Quality unknown" : `${file.height}p`;
+  if (file.requested !== null) {
+    return `${actual} (${qualityLabel(file.requested)})`;
+  }
+  return `${actual} (${file.variant} slot, unverified)`;
+}
+
+export function preferredSavedFile(files: SavedFile[]): SavedFile | undefined {
+  return (
+    files.find((file) => file.variant === "720") ??
+    files
+      .filter((file) => file.height !== null)
+      .sort((a, b) => (b.height ?? 0) - (a.height ?? 0))[0] ??
+    files[0]
+  );
 }
 
 export function historyView(
@@ -34,7 +60,12 @@ export function storageView(files: StorageFile[], query: string, sort: FilesSort
         sort === "largest"
           ? second.sizeBytes - first.sizeBytes
           : Date.parse(second.modifiedAt) - Date.parse(first.modifiedAt);
-      return order || compareIds(first.id, second.id);
+      return (
+        order ||
+        compareIds(first.id, second.id) ||
+        SavedVariantSchema.options.indexOf(first.variant) -
+          SavedVariantSchema.options.indexOf(second.variant)
+      );
     });
 }
 

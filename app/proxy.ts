@@ -1,5 +1,7 @@
 import type { HlsSource } from "./media";
 import { InputError } from "./media-errors";
+import type { Quality } from "./protocol";
+import { qualityHeight, qualityLabel } from "./quality";
 
 export type UpstreamFetch = (url: string, options: RequestInit) => Promise<Response>;
 
@@ -94,11 +96,13 @@ export class ProxySession {
   private resources = new Map<string, Resource>();
   private ids = new Map<string, string>();
   private root = "";
+  availableHeights: number[] = [];
 
   constructor(
     private source: HlsSource,
     private upstream: UpstreamFetch,
     readonly createdAt = Date.now(),
+    private quality: Quality = "720",
   ) {
     this.register(source.manifest);
   }
@@ -131,15 +135,33 @@ export class ProxySession {
 
     let lines = text.trimEnd().split(/\r?\n/);
     if (master) {
-      // YouTube's master includes VP9, 1080p and sometimes 38 dubbed audio tracks.
-      // Keep H.264/AAC ≤720p and the audio group referenced by those variants.
-      const chosen = lines.find(
-        (line) =>
-          line.startsWith("#EXT-X-STREAM-INF:") &&
+      // Keep the requested compatible ladder and its referenced audio group.
+      const cap = qualityHeight(this.quality);
+      const height = (line: string) => Number(/RESOLUTION=\d+x(\d+)/.exec(line)?.[1]);
+      const compatible = (line: string) => {
+        const renditionHeight = height(line);
+        return (
           /CODECS="[^"]*avc1\.[^"]*,mp4a\.40\.2"/.test(line) &&
-          Number(/RESOLUTION=\d+x(\d+)/.exec(line)?.[1]) <= 720 &&
-          /AUDIO="[^"]+"/.test(line),
-      );
+          Number.isSafeInteger(renditionHeight) &&
+          renditionHeight > 0 &&
+          (cap === null || renditionHeight <= cap)
+        );
+      };
+      const chosen = lines
+        .filter((line) => line.startsWith("#EXT-X-STREAM-INF:") && compatible(line))
+        .sort((a, b) => height(b) - height(a))
+        .find((line) => {
+          const group = /AUDIO="([^"]+)"/.exec(line)?.[1];
+          return (
+            group &&
+            lines.some(
+              (audio) =>
+                audio.startsWith("#EXT-X-MEDIA:") &&
+                audio.includes("TYPE=AUDIO") &&
+                audio.includes(`GROUP-ID="${group}"`),
+            )
+          );
+        });
       const group = chosen && /AUDIO="([^"]+)"/.exec(chosen)?.[1];
       const audio = lines.filter(
         (line) =>
@@ -148,8 +170,10 @@ export class ProxySession {
           line.includes(`GROUP-ID="${group}"`),
       );
       if (!group || !audio.length) {
+        const hint =
+          this.quality === "best" ? "Choose Save MP4." : "Try a higher limit or choose Save MP4.";
         throw new InputError(
-          "No H.264/AAC YouTube HLS playlist with audio at or below 720p. Select a download mode instead.",
+          `No H.264/AAC YouTube HLS playlist with audio (${qualityLabel(this.quality)}). ${hint}`,
         );
       }
 
@@ -171,12 +195,7 @@ export class ProxySession {
         } else if (line.startsWith("#EXT-X-I-FRAME-STREAM-INF:")) {
         } else if (line.startsWith("#EXT-X-STREAM-INF:")) {
           const uri = lines[++i];
-          if (
-            line.includes(`AUDIO="${group}"`) &&
-            /CODECS="[^"]*avc1\.[^"]*,mp4a\.40\.2"/.test(line) &&
-            Number(/RESOLUTION=\d+x(\d+)/.exec(line)?.[1]) <= 720 &&
-            uri
-          ) {
+          if (line.includes(`AUDIO="${group}"`) && compatible(line) && uri) {
             selected.push(line, uri);
           }
         } else {
@@ -184,6 +203,14 @@ export class ProxySession {
         }
       }
 
+      this.availableHeights = [
+        ...new Set(selected.filter((line) => line.startsWith("#EXT-X-STREAM-INF:")).map(height)),
+      ].sort((a, b) => a - b);
+      if (this.availableHeights.length === 0) {
+        throw new InputError(
+          `No playable HLS renditions (${qualityLabel(this.quality)}). Choose Save MP4.`,
+        );
+      }
       lines = selected;
     }
 

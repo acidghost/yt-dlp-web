@@ -16,7 +16,9 @@ const video = {
   channel: "Fixture channel",
   duration: 10,
   positionSeconds: 0,
-  stream: "/api/stream/abcdefghijk",
+  stream: "/api/stream/abcdefghijk/720",
+  variant: "720",
+  quality: { requested: null, height: null },
 };
 
 const entry = (title: string) => ({
@@ -27,11 +29,14 @@ const entry = (title: string) => ({
   duration: 10,
   lastWatchedAt: "2026-09-27T10:00:00.000Z",
   positionSeconds: 0,
-  mp4: { sizeBytes: 10 },
+  mp4: {
+    sizeBytes: 10,
+    variants: [{ variant: "720", requested: null, height: null, sizeBytes: 10 }],
+  },
 });
 
 async function serveFixtureMedia(page: Page): Promise<void> {
-  const mediaDir = join(import.meta.dirname, "../tmp/e2e-data/media", video.id);
+  const mediaDir = join(import.meta.dirname, "../tmp/e2e-data/media", video.id, "q-720");
 
   await mkdir(mediaDir, { recursive: true });
   await copyFile(join(import.meta.dirname, "fixtures/player.mp4"), join(mediaDir, "video.mp4"));
@@ -616,6 +621,7 @@ test("theater width and history chunks keep the player in place", async ({ page 
     [
       page.getByLabel("YouTube video URL"),
       page.getByLabel("Playback mode"),
+      page.getByLabel("Max quality", { exact: true }),
       page.getByRole("button", { name: "Prepare video" }),
       page.getByRole("button", { name: "Fill page" }),
     ].map(async (control) => (await control.boundingBox())?.y ?? -1),
@@ -791,6 +797,7 @@ for (const mode of ["mp4", "proxy"] as const) {
             : {
                 ...video,
                 kind: "proxy",
+                quality: { requested: "720", availableHeights: [90] },
                 hls: "/fixture-media/player.m3u8",
               },
       });
@@ -1163,7 +1170,13 @@ for (const mode of ["mp4", "proxy"] as const) {
         json: [
           {
             ...entry("Fixture video"),
-            mp4: { sizeBytes: mode === "mp4" ? 10 : null },
+            mp4: {
+              sizeBytes: mode === "mp4" ? 10 : null,
+              variants:
+                mode === "mp4"
+                  ? [{ variant: "720", requested: null, height: null, sizeBytes: 10 }]
+                  : [],
+            },
           },
         ],
       }),
@@ -1179,7 +1192,13 @@ for (const mode of ["mp4", "proxy"] as const) {
           ...video,
           duration: 120,
           positionSeconds: 8,
-          ...(mode === "proxy" ? { kind: "proxy", hls: "/fixture-media/player.m3u8" } : {}),
+          ...(mode === "proxy"
+            ? {
+                kind: "proxy",
+                quality: { requested: "720", availableHeights: [90] },
+                hls: "/fixture-media/player.m3u8",
+              }
+            : {}),
         },
       }),
     );
@@ -1323,6 +1342,7 @@ test("copy timestamp links use the playing source, mode and current time without
   expect(Object.fromEntries(copied.searchParams)).toEqual({
     url,
     mode: "mp4",
+    savedVariant: "720",
     t: "5",
   });
   expect(copied.hash).toBe("");
@@ -1365,7 +1385,12 @@ test("clipboard failure leaves a selectable timestamp link and preparation clear
   await page.route("**/api/history", (route) => route.fulfill({ json: [] }));
   await page.route("**/api/resolve", (route) =>
     route.fulfill({
-      json: { ...video, kind: "proxy", hls: "/fixture-media/player.m3u8" },
+      json: {
+        ...video,
+        kind: "proxy",
+        quality: { requested: "720", availableHeights: [90] },
+        hls: "/fixture-media/player.m3u8",
+      },
     }),
   );
   await serveFixtureMedia(page);
@@ -1386,6 +1411,7 @@ test("clipboard failure leaves a selectable timestamp link and preparation clear
   expect(Object.fromEntries(new URL(await fallback.inputValue()).searchParams)).toEqual({
     url,
     mode: "proxy",
+    quality: "720",
     t: "3",
   });
 

@@ -68,7 +68,7 @@ test("HTTP composes real media command/streams/metadata with staging, publicatio
   proc.exit();
   await stopStarted.promise;
 
-  expect((await fetch(`${base}/api/stream/abcdefghijk`)).status).toBe(404);
+  expect((await fetch(`${base}/api/stream/abcdefghijk/720`)).status).toBe(404);
   expect(await Bun.file(path).exists()).toBe(true);
 
   stopped.release();
@@ -81,7 +81,7 @@ test("HTTP composes real media command/streams/metadata with staging, publicatio
     channel: "Real parsed uploader",
     duration: 120,
   });
-  expect(await (await fetch(`${base}/api/stream/abcdefghijk`)).text()).toBe("media fixture");
+  expect(await (await fetch(`${base}/api/stream/abcdefghijk/720`)).text()).toBe("media fixture");
   expect(await Bun.file(path).exists()).toBe(false);
   expect(await history(base)).toEqual([]);
 
@@ -133,7 +133,7 @@ test("HTTP cancellation keeps real media's staging until the external stop contr
 
   expect(await Bun.file(path).exists()).toBe(false);
   expect(await Bun.file(`${dirname(path)}/video.mp4`).exists()).toBe(false);
-  expect((await fetch(`${base}/api/stream/abcdefghijk`)).status).toBe(404);
+  expect((await fetch(`${base}/api/stream/abcdefghijk/720`)).status).toBe(404);
   expect(await history(base)).toEqual([]);
   expect(proc.stop).toHaveBeenCalledTimes(1);
 });

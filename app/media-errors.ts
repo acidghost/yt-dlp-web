@@ -1,4 +1,5 @@
 export class InputError extends Error {}
+export class FormatUnavailableError extends InputError {}
 
 // Cleanup is unsafe if a descendant might still be writing into staging.
 export class DownloadTerminationError extends InputError {}
@@ -19,9 +20,7 @@ export function extractionFailure(stderr: string): InputError {
   }
 
   if (/Requested format is not available/i.test(stderr)) {
-    return new InputError(
-      "No H.264/AAC MP4 formats are available for this video at or below 720p.",
-    );
+    return new FormatUnavailableError("No compatible MP4 formats are available.");
   }
 
   if (/ffmpeg not found/i.test(stderr)) {
