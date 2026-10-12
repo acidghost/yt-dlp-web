@@ -7,7 +7,7 @@
       "dependencies": {
         "hls.js": "1.7.3",
         "lit": "3.3.3",
-        "media-chrome": "4.19.2",
+        "media-chrome": "4.19.3",
         "missing.css": "1.3.0",
         "zod": "4.6.5",
       },
@@ -81,7 +81,7 @@
 
     "lit-html": ["lit-html@3.3.3", "", { "dependencies": { "@types/trusted-types": "^2.0.2" } }, "sha512-el8M6jK2o3RXBnrSHX3ZKrsN8zEV63pSExTO1wYJz7QndGYZ8353e2a5PPX+qHe2aGayfnchQmkAojaWAREOIA=="],
 
-    "media-chrome": ["media-chrome@4.19.2", "", { "dependencies": { "ce-la-react": "^0.3.2" } }, "sha512-4ai1ITN8wBhwugQcRgqe3tN0z6OSKGOXqHLNrS04MgKFfsLqu6Dm8MPq02pI9Y9ZKoXtFjIl85jOryIW9es3BA=="],
+    "media-chrome": ["media-chrome@4.19.3", "", { "dependencies": { "ce-la-react": "^0.3.2" } }, "sha512-B5cPfn5FUTm3ki58QlEk2CB3xFo1i5jM1JavVN3bV81o09cokQC+qWVGVWZWY9Yoo6si9WeaQZUNn472WzbNVQ=="],
 
     "missing.css": ["missing.css@1.3.0", "", {}, "sha512-KIYpH94fsjQWECRb91h/p2dqtqYbp8bGvXYuDm7UdgxETy4ZW/FyIEumbTUnfONMOSmL3hUv7rPwStDrGcCLnw=="],
 
