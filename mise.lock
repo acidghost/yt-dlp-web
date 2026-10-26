@@ -125,10 +125,7 @@ url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.3/bun-windows-x
 [[tools.just]]
 version = "1.58.0"
 backend = "aqua:casey/just"
-specifiers = [
-    "1.58.0",
-    "latest",
-]
+specifiers = ["1.58.0"]
 
 [tools.just."platforms.linux-arm64"]
 checksum = "sha256:748237128c4c40cbdabc65e841d05ceba13cc23a91eaba395495894c1d9764df"
