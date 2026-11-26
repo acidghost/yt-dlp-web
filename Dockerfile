@@ -9,7 +9,7 @@ COPY app/ app/
 COPY scripts/build.ts scripts/build.ts
 RUN bun scripts/build.ts
 
-FROM ghcr.io/acidghost/yt-dlp-oci:2026.8.19-0@sha256:62949015c7aae0359c6278ae031b68e1db03a8f853c4983b12960f6702ed468b
+FROM ghcr.io/acidghost/yt-dlp-oci:2026.10.26-0@sha256:3f27a361ecb7810239701b6aa18701179690148601e5fe83636c49d781f01dbb
 USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
